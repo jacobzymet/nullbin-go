@@ -25,6 +25,8 @@ services:
     user: "65532:65532"
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
+    # Process limit (threads count). Generous for full load; stops a runaway.
+    pids_limit: 2048
     environment:
       NULLBIN_API_ONLY: "true"
       NULLBIN_BEHIND_HTTPS: "true"
@@ -61,6 +63,7 @@ services:
     read_only: true
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
+    pids_limit: 1024
     environment:
       DOMAIN: ${DOMAIN:?Set DOMAIN in deploy/.env (copy env.example to .env)}
     ports:

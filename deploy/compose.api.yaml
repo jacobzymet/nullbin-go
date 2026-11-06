@@ -21,6 +21,8 @@ services:
     user: "65532:65532"
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
+    # Process limit (threads count). Generous for full load; stops a runaway.
+    pids_limit: 2048
     environment:
       NULLBIN_API_ONLY: "true"
       NULLBIN_FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:?Set FRONTEND_ORIGIN in deploy/.env.api}
@@ -57,6 +59,7 @@ services:
     read_only: true
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
+    pids_limit: 1024
     environment:
       DOMAIN: ${API_DOMAIN:?Set API_DOMAIN in deploy/.env.api}
     ports:

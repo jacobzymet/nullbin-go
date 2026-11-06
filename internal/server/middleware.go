@@ -27,7 +27,10 @@ const ContentSecurityPolicy = "default-src 'none'; " +
 	"font-src 'self'; " +
 	"base-uri 'none'; " +
 	"form-action 'none'; " +
-	"frame-ancestors 'none'"
+	"frame-ancestors 'none'; " +
+	// Trusted Types: the browser itself refuses HTML-injection sinks such as
+	// innerHTML, so a future DOM XSS bug fails closed. No policies exist.
+	"require-trusted-types-for 'script'; trusted-types 'none'"
 
 // PermissionsPolicy denies every powerful feature. The one exception is
 // clipboard-write for this origin, which the copy buttons need.
@@ -48,6 +51,9 @@ func securityHeaders(behindHTTPS bool, next http.Handler) http.Handler {
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("Cache-Control", "no-store")
 		h.Set("Cross-Origin-Opener-Policy", "same-origin")
+		// With COOP, this isolates the page in its own process group, which
+		// limits side-channel (Spectre-style) reads of its memory.
+		h.Set("Cross-Origin-Embedder-Policy", "require-corp")
 		h.Set("Cross-Origin-Resource-Policy", "same-origin")
 		h.Set("X-Frame-Options", "DENY")
 		h.Set("Permissions-Policy", PermissionsPolicy)

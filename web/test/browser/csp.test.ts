@@ -26,7 +26,8 @@ import { loadSodium } from '../../src/sodium.ts';
 
 const EXPECTED_CSP =
   "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; connect-src 'self'; " +
-  "img-src 'self' blob: data:; font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+  "img-src 'self' blob: data:; font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; " +
+  "require-trusted-types-for 'script'; trusted-types 'none'";
 
 const root = path.resolve(import.meta.dirname, '..', '..', '..');
 let tmp = '';
@@ -259,13 +260,35 @@ test('negative control: the harness detects CSP violations', async () => {
   await goto(h, `${origin}/`);
   await h.page.evaluate(() => {
     const s = document.createElement('script');
-    s.textContent = 'window.__ran = 1';
+    try {
+      s.textContent = 'window.__ran = 1';
+    } catch {
+      // Trusted Types refuse the script text itself; that is reported too.
+    }
     document.body.append(s);
   });
   await h.page.waitForFunction(() => (window as unknown as { __csp: string[] }).__csp.length > 0);
   const ran = await h.page.evaluate(() => (window as unknown as { __ran?: number }).__ran);
   assert.equal(ran, undefined, 'inline script must not run');
   await assert.rejects(h.check(), 'check() must report the violation');
+  await h.context.close();
+});
+
+test('the browser itself blocks HTML injection and isolates the page', async () => {
+  const h = await open();
+  await goto(h, `${origin}/`);
+  await h.page.waitForSelector('#create', { state: 'visible' });
+  // Trusted Types: assigning a string to an HTML sink throws.
+  const blocked = await h.page.evaluate(() => {
+    try {
+      document.createElement('div').innerHTML = '<img src=x>';
+      return false;
+    } catch {
+      return true;
+    }
+  });
+  assert.equal(blocked, true, 'innerHTML must be refused by Trusted Types');
+  assert.equal(await h.page.evaluate(() => crossOriginIsolated), true, 'COOP + COEP isolate the page');
   await h.context.close();
 });
 

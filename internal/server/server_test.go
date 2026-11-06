@@ -191,11 +191,12 @@ func blob(n int) []byte {
 func checkSecurityHeaders(t *testing.T, label string, h http.Header, hsts bool) {
 	t.Helper()
 	want := map[string]string{
-		"Content-Security-Policy":      "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; connect-src 'self'; img-src 'self' blob: data:; font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+		"Content-Security-Policy":      "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; connect-src 'self'; img-src 'self' blob: data:; font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; require-trusted-types-for 'script'; trusted-types 'none'",
 		"Referrer-Policy":              "no-referrer",
 		"X-Content-Type-Options":       "nosniff",
 		"Cache-Control":                "no-store",
 		"Cross-Origin-Opener-Policy":   "same-origin",
+		"Cross-Origin-Embedder-Policy": "require-corp",
 		"Cross-Origin-Resource-Policy": "same-origin",
 		"X-Frame-Options":              "DENY",
 		"Permissions-Policy":           PermissionsPolicy,

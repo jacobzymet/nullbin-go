@@ -507,6 +507,10 @@ address:
    learn about illegal content. The **Report a vulnerability** link at the
    bottom of every page goes to the Nullbin maintainer and is only for
    security flaws in the software, not for reporting pastes.
+4. **Check the live site from outside.** Run your address through the
+   [SSL Labs server test](https://www.ssllabs.com/ssltest/) (HTTPS setup) and
+   [Mozilla HTTP Observatory](https://developer.mozilla.org/en-US/observatory)
+   (security headers). Both should give top grades; look into any warning.
 
 ### Remove a reported paste
 
@@ -593,7 +597,7 @@ and limitations.
 | Storage | Ciphertext and JSON operational metadata on local persistent disk. One API process per data directory; shared network filesystems and multiple API writers are unsupported. Files use mode `0600`, directories `0700`. |
 | Deployment | Separate static frontend and API, on one server or separate hosts. In the provided production Compose layouts, the API and the Caddy HTTPS proxy both run from distroless images (no shell, tools or package manager) as non-root users with read-only root filesystems and no added capabilities; only their data volumes are writable. The API has no internet access. Caddy serves HTTP/1.1 and HTTP/2 only, without HTTP/3. Linux is the supported production platform. |
 | Browser requirements | JavaScript and WebAssembly. Production uses HTTPS. Clipboard access is optional; manual copying remains available. Streaming file saves are optional, with the limits below. |
-| HTTP security | Strict Content Security Policy, Subresource Integrity for scripts/styles, `no-referrer`, `nosniff`, and `same-origin` COOP/CORP headers. API CORS permits only the configured frontend origin, without cookies or credentialed requests. |
+| HTTP security | Strict Content Security Policy with Trusted Types (the browser refuses HTML-injection APIs), Subresource Integrity for scripts/styles, `no-referrer`, `nosniff`, and `same-origin` COOP/CORP headers, and COEP `require-corp`, which isolates the page from side-channel memory reads. API CORS permits only the configured frontend origin, without cookies or credentialed requests. |
 | Distribution | Dependencies are pinned; frontend files have SHA-256 manifests and content-hashed asset names. Builds are reproducible, and each release lists the checksums its build produces. Nothing prebuilt is published. See [verification](#verify-a-build-or-running-site) and [third-party notices](THIRD_PARTY_NOTICES), including the pinned local QR encoder. |
 
 HTTPS protects the connection separately from paste encryption. Its TLS

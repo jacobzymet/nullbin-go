@@ -17,7 +17,8 @@ export function contentSecurityPolicy(apiOrigin = '') {
   apiOrigin = parseAPIOrigin(apiOrigin);
   return "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; " +
     `connect-src 'self'${apiOrigin ? ` ${apiOrigin}` : ''}; ` +
-    "img-src 'self' blob: data:; font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+    "img-src 'self' blob: data:; font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; " +
+    "require-trusted-types-for 'script'; trusted-types 'none'";
 }
 
 export function frontendHeaders(apiOrigin = '') {
@@ -26,6 +27,7 @@ export function frontendHeaders(apiOrigin = '') {
     'Referrer-Policy': 'no-referrer',
     'X-Content-Type-Options': 'nosniff',
     'Cross-Origin-Opener-Policy': 'same-origin',
+    'Cross-Origin-Embedder-Policy': 'require-corp',
     'Cross-Origin-Resource-Policy': 'same-origin',
     'X-Frame-Options': 'DENY',
     'Permissions-Policy': 'accelerometer=(), autoplay=(), browsing-topics=(), camera=(), clipboard-read=(), clipboard-write=(self), display-capture=(), encrypted-media=(), fullscreen=(), geolocation=(), gyroscope=(), hid=(), idle-detection=(), magnetometer=(), microphone=(), midi=(), payment=(), picture-in-picture=(), publickey-credentials-create=(), publickey-credentials-get=(), screen-wake-lock=(), serial=(), sync-xhr=(), usb=(), web-share=(), xr-spatial-tracking=()',

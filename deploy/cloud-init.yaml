@@ -23,6 +23,10 @@ write_files:
       MAX_SIZE=100MiB
   # ---------------------------------------------------------------------------
 
+# SSH: keys only, never passwords, and no direct root login.
+ssh_pwauth: false
+disable_root: true
+
 package_update: true
 package_upgrade: true
 packages:
