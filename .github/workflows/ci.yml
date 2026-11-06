@@ -1,0 +1,406 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Least privilege by default. Jobs that need more ask for it explicitly.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GO_VERSION: "1.27.3"
+  STATICCHECK_VERSION: "v0.8.2"
+  GOVULNCHECK_VERSION: "v1.9.0"
+  GITLEAKS_VERSION: "8.30.1"
+  GITLEAKS_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+
+jobs:
+  go:
+    name: Go (fmt, vet, staticcheck, test -race, govulncheck)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then echo "$unformatted"; exit 1; fi
+      - name: go vet
+        run: go vet ./...
+      - name: staticcheck
+        run: go run "honnef.co/go/tools/cmd/staticcheck@${STATICCHECK_VERSION}" ./...
+      - name: go test -race
+        run: |
+          go test -race -count=1 ./...
+          go test -tags=api -race -count=1 ./...
+      - name: Fuzz (short run per target)
+        run: |
+          go test -run='^$' -fuzz='^FuzzValidID$' -fuzztime=15s ./internal/storage
+          for f in FuzzParseChunkIndex FuzzClientIP FuzzHandler; do
+            go test -run='^$' -fuzz="^${f}\$" -fuzztime=15s ./internal/server
+          done
+      - name: govulncheck
+        run: go run "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}" ./...
+
+  web:
+    name: Frontend (npm ci, audit, typecheck, tests, build)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+      - name: npm ci
+        run: npm ci --ignore-scripts
+      - name: npm audit
+        run: npm audit --audit-level=low
+      - name: npm audit signatures
+        run: npm audit signatures
+      - name: typecheck
+        run: npm run typecheck
+      - name: unit tests (crypto, UI helpers)
+        run: npm test
+      - name: build bundles
+        run: npm run build
+
+  browser:
+    name: Browser (${{ matrix.mode }}, CSP and all features)
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [combined, split]
+    env:
+      NB_TEST_SPLIT: ${{ matrix.mode == 'split' && '1' || '0' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false
+      - name: npm ci
+        run: npm ci --ignore-scripts
+      - name: build bundles and binary
+        run: |
+          npm run build
+          if [ "$NB_TEST_SPLIT" = 1 ]; then
+            go build -tags=api -trimpath -o "$RUNNER_TEMP/nullbin" ./cmd/nullbin
+          else
+            go build -trimpath -o "$RUNNER_TEMP/nullbin" ./cmd/nullbin
+          fi
+      # Uses the Google Chrome preinstalled on GitHub's Ubuntu runners.
+      - name: browser test
+        run: |
+          NB_TEST_BINARY="$RUNNER_TEMP/nullbin" CHROME_PATH="$(command -v google-chrome)" npm run test:browser
+
+  gitleaks:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      # The MIT-licensed gitleaks binary, pinned by version and SHA-256.
+      - name: Install gitleaks
+        run: |
+          cd "$RUNNER_TEMP"
+          curl -sSfL -o gitleaks.tar.gz \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  gitleaks.tar.gz" | sha256sum -c -
+          tar -xzf gitleaks.tar.gz gitleaks
+      - name: Scan full git history
+        run: '"$RUNNER_TEMP/gitleaks" git --no-banner --redact --verbose --exit-code 1 .'
+
+  docker:
+    name: Docker build and hardened smoke test
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: docker build
+        run: docker build --build-arg VERSION=ci -t nullbin:ci .
+      - name: run read-only, non-root, no capabilities
+        run: |
+          docker run -d --name nullbin --read-only --cap-drop ALL \
+            --security-opt no-new-privileges -p 127.0.0.1:8080:8080 nullbin:ci
+          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:8080/api/v1/version && break; sleep 1; done
+          curl -fsS -D headers.txt -o /dev/null http://127.0.0.1:8080/
+          grep -qi "^content-security-policy: default-src 'none'" headers.txt
+          test "$(docker inspect nullbin --format '{{.Config.User}}')" = "65532:65532"
+          docker logs nullbin
+          docker rm -f nullbin
+
+  reproducible:
+    name: Reproducible build (Docker vs native, different directory)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false
+      - name: Build A (Dockerfile, as releases are built)
+        run: docker build --no-cache --target artifacts --build-arg VERSION=repro --output "type=local,dest=$RUNNER_TEMP/a" .
+      - name: Build B (native toolchain, another directory)
+        run: |
+          mkdir -p "$RUNNER_TEMP/elsewhere/src" "$RUNNER_TEMP/b/dist"
+          git archive HEAD | tar -x -C "$RUNNER_TEMP/elsewhere/src"
+          cd "$RUNNER_TEMP/elsewhere/src"
+          npm ci --ignore-scripts --no-audit --no-fund
+          NULLBIN_VERSION=repro npm run build
+          CGO_ENABLED=0 GOTOOLCHAIN=local go build -trimpath -buildvcs=false \
+            -ldflags="-s -w -buildid= -X main.version=repro" \
+            -o "$RUNNER_TEMP/b/nullbin" ./cmd/nullbin
+          cp internal/assets/dist/app.js internal/assets/dist/app.css internal/assets/dist/index.html "$RUNNER_TEMP/b/dist/"
+      - name: Compare
+        run: |
+          cd "$RUNNER_TEMP"
+          (cd a && sha256sum nullbin dist/app.js dist/app.css dist/index.html) | tee a.sha256
+          (cd b && sha256sum nullbin dist/app.js dist/app.css dist/index.html) > b.sha256
+          diff a.sha256 b.sha256
+
+  deploy-bundle:
+    name: Deploy bundle (Caddy + HTTPS) smoke test
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Start deploy/compose.yaml exactly as a user would (DOMAIN=localhost)
+        working-directory: deploy
+        run: |
+          printf 'DOMAIN=localhost\nMAX_SIZE=100MiB\n' > .env
+          VERSION=v0.0.0-ci docker compose up -d --build --wait --wait-timeout 300
+      - name: Operators can remove a reported paste by ID
+        working-directory: deploy
+        run: |
+          set -x
+          created=$(curl -fsSk -H 'Content-Type: application/json'             -d '{"expires_in":300,"burn_after_reading":false,"total_size":100}' https://localhost/api/v1/pastes)
+          id=$(printf '%s' "$created" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
+          token=$(printf '%s' "$created" | python3 -c 'import json,sys; print(json.load(sys.stdin)["upload_token"])')
+          head -c 100 /dev/urandom > blob.bin
+          curl -fsSk -X PUT -H 'Content-Type: application/octet-stream' -H "Nullbin-Upload-Token: $token"             --data-binary @blob.bin "https://localhost/api/v1/pastes/$id/chunks/0"
+          curl -fsSk -X POST -H "Nullbin-Upload-Token: $token" "https://localhost/api/v1/pastes/$id/finalize"
+          test "$(curl -sk -o /dev/null -w '%{http_code}' "https://localhost/api/v1/pastes/$id")" = 200
+          # The steps from the README.
+          docker compose stop nullbin
+          docker compose run --rm --no-deps nullbin delete "$id" | tee delete.txt
+          grep -q Deleted delete.txt
+          docker compose start nullbin
+          for i in $(seq 1 30); do
+            [ "$(curl -sk -o /dev/null -w '%{http_code}' https://localhost/api/v1/version)" = 200 ] && break
+            sleep 2
+          done
+          test "$(curl -sk -o /dev/null -w '%{http_code}' "https://localhost/api/v1/pastes/$id")" = 404
+      - name: HTTPS, headers, redirect, isolation, rate limits
+        run: |
+          set -x
+          curl -fsSk -D headers.txt -o /dev/null https://localhost/
+          grep -qi "^content-security-policy: default-src 'none'" headers.txt
+          grep -qi '^strict-transport-security: max-age=31536000' headers.txt
+          if grep -qi '^server:' headers.txt; then echo 'Server header leaked'; exit 1; fi
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost/)" = 308
+          # Nullbin itself is not reachable from the host.
+          if curl -s -m 3 http://127.0.0.1:8080/; then echo 'nullbin is reachable directly'; exit 1; fi
+          test "$(docker inspect nullbin-nullbin-1 --format '{{.Config.User}} {{.HostConfig.ReadonlyRootfs}}')" = "65532:65532 true"
+          # The internet-facing proxy: non-root, read-only, no added capabilities,
+          # no shell, and no HTTP/3.
+          test "$(docker inspect nullbin-caddy-1 --format '{{.Config.User}} {{.HostConfig.ReadonlyRootfs}} {{.HostConfig.CapAdd}}')" = "65532:65532 true []"
+          if docker exec nullbin-caddy-1 sh -c true 2>/dev/null; then echo 'the proxy has a shell'; exit 1; fi
+          if grep -qi '^alt-svc:' headers.txt; then echo 'HTTP/3 is advertised'; exit 1; fi
+          test "$(docker network inspect nullbin_backend --format '{{.Internal}}')" = true
+          # Spoofed X-Forwarded-For through Caddy must not get past the limit.
+          codes=""
+          for i in $(seq 1 30); do
+            codes="$codes $(curl -sk -o /dev/null -w '%{http_code}' -H "X-Forwarded-For: 10.9.$i.1" \
+              -H 'Content-Type: application/json' \
+              -d '{"expires_in":300,"burn_after_reading":false,"total_size":100}' https://localhost/api/v1/pastes)"
+          done
+          echo "$codes" | grep -q 429
+      - name: Frontend stays independent of the API
+        working-directory: deploy
+        run: |
+          curl -fsSk https://localhost/ -o frontend-before.html
+          curl -fsSk https://localhost/version.json -o frontend-version.json
+          python3 - <<'PY'
+          import json, hashlib
+          from pathlib import Path
+          data = json.loads(Path('frontend-version.json').read_text())
+          assert data['api_origin'] == 'same-origin'
+          # The page and its manifest name the version it was built from.
+          assert data['version'] == 'v0.0.0-ci', data
+          assert '>Nullbin v0.0.0-ci<' in Path('frontend-before.html').read_text()
+          assert hashlib.sha256(Path('frontend-before.html').read_bytes()).hexdigest() == data['html_sha256']
+          Path('asset-path.txt').write_text(data['js'])
+          PY
+          asset=$(cat asset-path.txt)
+          curl -fsSk -D asset-headers.txt "https://localhost$asset" -o /dev/null
+          grep -qi '^cache-control: public, max-age=31536000, immutable' asset-headers.txt
+          curl -fsSk https://localhost/api/v1/version | grep -q '"mode":"api"'
+          # The version passed at build time is what the footer link reports.
+          curl -fsSk https://localhost/api/v1/version | grep -q '"version":"v0.0.0-ci"'
+          # The API container has no frontend or host mounts to change.
+          test "$(docker inspect nullbin-nullbin-1 --format '{{len .Mounts}}')" = 1
+          docker compose stop nullbin
+          curl -fsSk https://localhost/ -o frontend-after.html
+          cmp frontend-before.html frontend-after.html
+          curl -fsSk https://localhost/p/0123456789abcdef0123456789abcdef -o frontend-view.html
+          cmp frontend-before.html frontend-view.html
+      - name: Proxy errors do not log request identifiers or capability tokens
+        working-directory: deploy
+        run: |
+          docker compose stop nullbin
+          status=$(curl -sk -o /dev/null -w '%{http_code}' -X POST \
+            -H 'Nullbin-Upload-Token: audit-upload-sentinel' \
+            -H 'Nullbin-Delete-Token: audit-delete-sentinel' \
+            -H 'Nullbin-Burn-Token: audit-burn-sentinel' \
+            -H 'Nullbin-Comment-Token: audit-comment-sentinel' \
+            -H 'User-Agent: audit-agent-sentinel' \
+            'https://localhost/api/v1/pastes/0123456789abcdef0123456789abcdef/read')
+          test "$status" = 502
+          docker logs nullbin-caddy-1 > caddy-errors.log 2>&1
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          raw = Path('caddy-errors.log').read_text()
+          for marker in ('audit-upload-sentinel', 'audit-delete-sentinel', 'audit-burn-sentinel',
+                         'audit-comment-sentinel', 'audit-agent-sentinel', '0123456789abcdef0123456789abcdef'):
+              assert marker not in raw, 'request data leaked into proxy logs'
+          entries = []
+          for line in raw.splitlines():
+              try:
+                  entries.append(json.loads(line))
+              except ValueError:
+                  pass
+          errors = [e for e in entries if e.get('logger', '').startswith('http.log.error') and e.get('status') == 502]
+          assert errors, 'the failure must retain a useful, redacted error log'
+          assert all('request' not in e and 'resp_headers' not in e for e in errors)
+          PY
+      - name: A hostile API cannot serve executable frontend pages
+        working-directory: deploy
+        run: |
+          mkdir -p "$RUNNER_TEMP/hostile-api"
+          cat > "$RUNNER_TEMP/hostile-api/Caddyfile" <<'CADDY'
+          :8080 {
+            header Content-Type text/html
+            header Content-Security-Policy "script-src * 'unsafe-inline'"
+            header Set-Cookie "api-control=bad; Path=/"
+            header Service-Worker-Allowed /
+            respond "<script>window.apiControlled=true</script>" 200
+          }
+          CADDY
+          docker compose rm -f nullbin
+          docker run -d --name hostile-api --network nullbin_backend --ip 172.30.53.20 \
+            -v "$RUNNER_TEMP/hostile-api/Caddyfile:/etc/caddy/Caddyfile:ro" \
+            --entrypoint caddy "$(docker compose images -q caddy)" \
+            run --config /etc/caddy/Caddyfile --adapter caddyfile
+          for i in $(seq 1 20); do
+            status=$(curl -sk -o /dev/null -w '%{http_code}' https://localhost/api/v1/version)
+            if [ "$status" = 200 ]; then break; fi
+            sleep 1
+          done
+          curl -fsSk -D hostile-headers.txt https://localhost/api/v1/version -o hostile-body.txt
+          grep -q apiControlled hostile-body.txt
+          grep -qi "^content-security-policy: default-src 'none';.*sandbox" hostile-headers.txt
+          if grep -Eqi '^(set-cookie|service-worker-allowed):' hostile-headers.txt; then exit 1; fi
+          curl -fsSk https://localhost/ -o frontend-hostile-api.html
+          cmp frontend-before.html frontend-hostile-api.html
+          docker rm -f hostile-api
+      - name: Logs
+        if: always()
+        working-directory: deploy
+        run: docker compose logs --no-color
+
+  deploy-api:
+    name: Separate API deployment (HTTPS, CORS and isolation)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Start the separate API layout
+        working-directory: deploy
+        run: |
+          printf 'API_DOMAIN=localhost\nFRONTEND_ORIGIN=https://paste.example.com\n' > .env.api
+          VERSION=v0.0.0-ci docker compose --env-file .env.api -f compose.api.yaml up -d --build --wait --wait-timeout 300
+          test "$(docker inspect nullbin-caddy-1 --format '{{.Config.User}} {{.HostConfig.ReadonlyRootfs}} {{.HostConfig.CapAdd}}')" = "65532:65532 true []"
+          if docker exec nullbin-caddy-1 sh -c true 2>/dev/null; then echo 'the proxy has a shell'; exit 1; fi
+      - name: Check exact origins and real cross-origin writes
+        run: |
+          python3 - <<'PY'
+          import json, ssl, urllib.request, urllib.error
+          ctx = ssl._create_unverified_context()
+          base = 'https://localhost'
+          allowed = 'https://paste.example.com'
+          def call(path, method='GET', data=None, headers=None):
+              req = urllib.request.Request(base + path, data=data, headers=headers or {}, method=method)
+              try:
+                  return urllib.request.urlopen(req, context=ctx)
+              except urllib.error.HTTPError as err:
+                  return err
+          assert call('/').status == 404
+          assert call('/assets/app.js').status == 404
+          version = json.load(call('/api/v1/version'))
+          assert version == {'mode': 'api', 'version': 'v0.0.0-ci'}, version
+          for origin, status in ((allowed, 204), ('https://evil.example', 403)):
+              resp = call('/api/v1/pastes', 'OPTIONS', headers={
+                  'Origin': origin, 'Access-Control-Request-Method': 'POST',
+                  'Access-Control-Request-Headers': 'content-type,nullbin-burn-token'})
+              assert resp.status == status
+              assert resp.headers.get('Access-Control-Allow-Origin') == (allowed if status == 204 else None)
+          resp = call('/api/v1/pastes', 'POST', json.dumps({
+              'expires_in': 300, 'burn_after_reading': False, 'total_size': 100}).encode(), {
+                  'Origin': allowed, 'Sec-Fetch-Site': 'cross-site', 'Content-Type': 'application/json'})
+          assert resp.status == 201
+          assert resp.headers['Access-Control-Allow-Origin'] == allowed
+          assert 'sandbox' in resp.headers['Content-Security-Policy']
+          assert resp.headers.get('Access-Control-Allow-Credentials') is None
+          assert call('/api/v1/pastes', 'POST', b'{}', {
+              'Origin': 'https://evil.example', 'Sec-Fetch-Site': 'cross-site',
+              'Content-Type': 'application/json'}).status == 403
+          PY
+      - name: Logs
+        if: always()
+        working-directory: deploy
+        run: docker compose --env-file .env.api -f compose.api.yaml logs --no-color
+
+  arm64:
+    name: arm64 cross-build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build arm64 artifacts and check the binary's architecture
+        run: |
+          docker build --platform linux/arm64 --target artifacts --output type=local,dest=out .
+          file out/nullbin | tee /dev/stderr | grep -q 'ARM aarch64'

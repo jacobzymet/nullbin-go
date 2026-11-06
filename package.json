@@ -1,0 +1,27 @@
+{
+  "name": "nullbin-web",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Nullbin static browser frontend",
+  "license": "UNLICENSED",
+  "type": "module",
+  "engines": {
+    "node": ">=26.0.0"
+  },
+  "scripts": {
+    "build": "node web/build.mjs",
+    "build:frontend": "node web/build.mjs --frontend-only",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "node --test web/test/*.test.ts",
+    "test:browser": "node --test web/test/browser/*.test.ts"
+  },
+  "dependencies": {
+    "bootstrap": "5.3.8",
+    "libsodium-wrappers-sumo": "0.8.4"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2",
+    "playwright-core": "1.64.1",
+    "typescript": "7.0.2"
+  }
+}

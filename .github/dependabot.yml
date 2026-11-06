@@ -1,0 +1,37 @@
+# Every Dependabot PR still needs maintainer review (see CONTRIBUTING.md).
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    # Wait a week before proposing a fresh release, so a malicious publish
+    # has time to be noticed and pulled.
+    cooldown:
+      default-days: 7
+    versioning-strategy: increase
+    ignore:
+      # Stay on Bootstrap 5.x. Never move to a 6.x alpha/beta or major.
+      - dependency-name: bootstrap
+        update-types: ["version-update:semver-major"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7

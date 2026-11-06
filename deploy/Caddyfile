@@ -1,0 +1,70 @@
+# Caddy terminates HTTPS for Nullbin. It gets and renews certificates
+# automatically (Let's Encrypt or ZeroSSL) once DOMAIN points at this server.
+# Access logging is off (Caddy's default without a `log` directive): URLs
+# contain paste IDs.
+{
+	# No admin API; restart the container to reload this file.
+	admin off
+	# HTTP/1.1 and HTTP/2 only. HTTP/3 would add a whole protocol stack
+	# (QUIC over UDP) for little benefit here; browsers fall back by themselves.
+	servers {
+		protocols h1 h2
+	}
+	# Never try to add Caddy's local test CA to the container's trust store.
+	skip_install_trust
+	# Runtime errors also include request headers, even without access
+	# logging. Remove the entire request, including custom capability tokens,
+	# paste IDs, client addresses and user agents, from the default logger.
+	log default {
+		format filter {
+			wrap json
+			fields {
+				request delete
+				resp_headers delete
+			}
+		}
+	}
+}
+
+{$DOMAIN} {
+	root * /srv
+	import /etc/caddy/headers.caddy
+	header -Server
+
+	# API responses cannot become executable pages on the frontend origin,
+	# even if the API process is compromised. Only /api/v1/ reaches it.
+	handle /api/v1/* {
+		request_body {
+			max_size 9MB
+		}
+		reverse_proxy 172.30.53.20:8080 {
+			header_down Content-Security-Policy "default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; sandbox"
+			header_down X-Content-Type-Options nosniff
+			header_down -Service-Worker-Allowed
+			header_down -Set-Cookie
+		}
+	}
+
+	# Hashed assets are public and safe to cache. No backend filesystem is
+	# mounted here; only the frontend image can supply these files.
+	handle /assets/* {
+		header Cache-Control "public, max-age=31536000, immutable"
+		file_server
+	}
+
+	@pages path / /index.html /p/* /d/*
+	handle @pages {
+		header Cache-Control no-store
+		rewrite * /index.html
+		file_server
+	}
+
+	handle /version.json {
+		header Cache-Control no-store
+		file_server
+	}
+
+	handle {
+		respond "Not found" 404
+	}
+}

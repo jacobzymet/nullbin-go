@@ -1,0 +1,132 @@
+name: Release
+
+# Runs only for version tags pushed by maintainers (forks cannot trigger it).
+#
+# A release is the tagged source plus SHA256SUMS: the checksums a
+# reproducible build of that tag produces. Nothing prebuilt is published;
+# servers build the release from source themselves, and anyone can rebuild
+# it and compare with SHA256SUMS.
+#
+# Two jobs keep privileges apart:
+#   build   - read-only; checks the tag, builds twice and computes checksums
+#   release - can only create the GitHub release; runs no project code
+#
+# Only a commit on main that already passed CI can be released. The install
+# commands look up the latest GitHub release, so servers see a new version
+# only once every check here passed.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  TAG: ${{ github.ref_name }}
+
+jobs:
+  build:
+    name: Build and check (read-only)
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read # check the CI result for the tagged commit
+    outputs:
+      sums: ${{ steps.sums.outputs.sums }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # to check that the tag is on main
+          persist-credentials: false
+
+      - name: Validate tag
+        run: '[[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] || { echo "bad tag: $TAG"; exit 1; }'
+
+      - name: Require a commit on main that passed CI
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || { echo "The tag must point to a commit on main."; exit 1; }
+          # Check each run's result here: the API's status filter can miss a
+          # run that finished moments ago.
+          passed=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$GITHUB_SHA&event=push" -q '[.workflow_runs[] | select(.conclusion == "success")] | length')
+          [[ "$passed" -gt 0 ]] || { echo "CI has not passed on main for this commit."; exit 1; }
+
+      # No build cache anywhere, so the checksums come from a clean build.
+      - name: Build binaries and bundles (amd64, arm64)
+        run: |
+          for arch in amd64 arm64; do
+            docker build --no-cache --platform "linux/$arch" --target artifacts --build-arg "VERSION=$TAG" --output "type=local,dest=out-$arch" .
+          done
+          # The bundles are built once per platform; they must be identical.
+          diff <(cd out-amd64/dist && sha256sum *) <(cd out-arm64/dist && sha256sum *)
+
+      - name: Rebuild and check the build is reproducible
+        run: |
+          for arch in amd64 arm64; do
+            docker build --no-cache --platform "linux/$arch" --target artifacts --build-arg "VERSION=$TAG" --output "type=local,dest=again-$arch" .
+            diff <(cd "out-$arch" && sha256sum nullbin dist/*) <(cd "again-$arch" && sha256sum nullbin dist/*)
+          done
+
+      - name: Compute checksums
+        id: sums
+        run: |
+          mkdir release
+          cp out-amd64/nullbin release/nullbin-linux-amd64
+          cp out-arm64/nullbin release/nullbin-linux-arm64
+          cp out-amd64/dist/app.js out-amd64/dist/app.css out-amd64/dist/index.html release/
+          sums=$(cd release && sha256sum nullbin-linux-amd64 nullbin-linux-arm64 app.js app.css index.html)
+          echo "$sums"
+          { echo "sums<<END_OF_SUMS"; echo "$sums"; echo "END_OF_SUMS"; } >> "$GITHUB_OUTPUT"
+
+  release:
+    name: Create the GitHub release
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write # create the GitHub release
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      SUMS: ${{ needs.build.outputs.sums }}
+    steps:
+      - name: Create GitHub release
+        run: |
+          printf '%s\n' "$SUMS" > SHA256SUMS
+          # Only sha256sum lines ("<64 hex>  <file name>") are expected.
+          if grep -qvE '^[0-9a-f]{64} [ *][A-Za-z0-9._-]+$' SHA256SUMS; then echo "unexpected checksum output"; exit 1; fi
+          cat > notes.md <<NOTES
+          ## Install or update
+
+          Nullbin is built from source on your own server; nothing prebuilt
+          is published. Follow the
+          [install and update steps](https://github.com/${GH_REPO}#start-here)
+          in the README. They pick up this release automatically.
+
+          ## Checksums
+
+          Builds are reproducible: building this release from source gives
+          exactly these files. To check, run this in a checkout of \`${TAG}\`
+          (on an arm64 machine, compare with the arm64 line):
+
+          \`\`\`
+          docker build --target artifacts --build-arg VERSION=${TAG} --output type=local,dest=out .
+          sha256sum out/nullbin out/dist/app.js out/dist/app.css out/dist/index.html
+          \`\`\`
+
+          \`app.js\`, \`app.css\` and \`index.html\` are the frontend of the
+          optional combined server. A separately hosted frontend is built
+          with its own API address, so its hashes differ; it reports them in
+          \`/version.json\`.
+
+          \`\`\`
+          ${SUMS}
+          \`\`\`
+          NOTES
+          prerelease=()
+          if [[ "$TAG" == *-* ]]; then prerelease=(--prerelease); fi
+          gh release create "$TAG" --verify-tag "${prerelease[@]}" --title "Nullbin $TAG" --notes-file notes.md SHA256SUMS

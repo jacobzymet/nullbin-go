@@ -1,0 +1,343 @@
+<!doctype html>
+<html lang="en" translate="no" data-bs-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="noindex, nofollow">
+<!-- Browser translation and enhanced spell check send page text to cloud services. -->
+<meta name="google" content="notranslate">
+<meta name="color-scheme" content="light dark">
+<title>Nullbin</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/assets/app.css" integrity="__CSS_INTEGRITY__">
+<script type="module" src="/assets/app.js" integrity="__JS_INTEGRITY__"></script>
+</head>
+<body>
+<svg class="nb-sprite" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg">
+  <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="10.5" width="14" height="10" rx="2"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/></symbol>
+  <symbol id="i-flame" viewBox="0 0 24 24"><path d="M12 3c1 3.5 5 5.5 5 10a5 5 0 0 1-10 0c0-2.5 1.5-4 2.5-5 .3 1.8 1.2 2.8 2.5 3.2C12 9 11 6 12 3z"/></symbol>
+  <symbol id="i-file" viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/></symbol>
+  <symbol id="i-clip" viewBox="0 0 24 24"><path d="m20 11.5-7.8 7.8a5 5 0 0 1-7.1-7.1l8.5-8.5a3.3 3.3 0 0 1 4.7 4.7l-8.5 8.5a1.7 1.7 0 0 1-2.4-2.4l7.8-7.8"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7.5"/></symbol>
+  <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/></symbol>
+  <symbol id="i-eye-off" viewBox="0 0 24 24"><path d="m3 3 18 18"/><path d="M10.6 6.1a9.6 9.6 0 0 1 1.4-.1c6 0 9.5 6.5 9.5 6.5a16 16 0 0 1-2.7 3.5M6.6 7.6C4 9.3 2.5 12 2.5 12S6 18.5 12 18.5c1.6 0 3-.4 4.2-1.1"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></symbol>
+  <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M4.6 4.6 6 6M18 18l1.4 1.4M2.5 12h2M19.5 12h2M4.6 19.4 6 18M18 6l1.4-1.4"/></symbol>
+  <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20 14.5A8 8 0 1 1 9.5 4 6.5 6.5 0 0 0 20 14.5z"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M9 7V4.5h6V7M6.5 7l1 13h9l1-13M10 11v6M14 11v6"/></symbol>
+  <symbol id="i-chat" viewBox="0 0 24 24"><path d="M20 12a7.5 7.5 0 0 1-11 6.6L4 20l1.4-4.6A7.5 7.5 0 1 1 20 12z"/></symbol>
+  <symbol id="i-reply" viewBox="0 0 24 24"><path d="M9 8 4 12.5 9 17"/><path d="M4.5 12.5H14a6 6 0 0 1 6 6v.5"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 3.5 2.5 20h19z"/><path d="M12 10v4.5M12 17.25v.01"/></symbol>
+  <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v11M7.5 10.5 12 15l4.5-4.5M5 20h14"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
+  <symbol id="i-wrap" viewBox="0 0 24 24"><path d="M4 6h16M4 12h13a3 3 0 0 1 0 6h-4"/><path d="m15 16-2 2 2 2M4 18h5"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 0 0-14.5-4.5L4 8M4 4v4h4"/><path d="M4 13a8 8 0 0 0 14.5 4.5L20 16M20 20v-4h-4"/></symbol>
+  <symbol id="i-new" viewBox="0 0 24 24"><path d="M14 3H6v18h12V7zM14 3v5h4M8 14h8M12 10v8"/></symbol>
+  <symbol id="i-raw" viewBox="0 0 24 24"><path d="m8 7-5 5 5 5M16 7l5 5-5 5M14 4l-4 16"/></symbol>
+  <symbol id="i-mail" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 6 9 7 9-7"/></symbol>
+  <symbol id="i-qr" viewBox="0 0 24 24"><path d="M3 3h6v6H3zM15 3h6v6h-6zM3 15h6v6H3zM15 15h3v3h3v3h-6zM12 3v9H3M12 15v6M15 12h6M21 12v3"/></symbol>
+</svg>
+
+<a class="visually-hidden-focusable nb-skip" href="#main">Skip to content</a>
+
+<header class="nb-top">
+  <div class="nb-shell nb-top-row">
+    <a class="nb-brand" href="/" aria-label="Nullbin home">Nullbin</a>
+    <nav class="nb-top-actions" aria-label="Main navigation"><a id="nav-new" href="/" class="btn nb-btn-secondary">New paste</a>
+    <button id="theme-toggle" type="button" class="btn nb-icon-btn" aria-pressed="false" aria-label="Dark theme"><svg class="nb-i" aria-hidden="true"><use id="theme-icon" href="#i-moon"/></svg><span>Theme</span></button></nav>
+  </div>
+</header>
+
+<main id="main" class="nb-shell nb-main" tabindex="-1">
+  <noscript>
+    <div class="nb-note">Nullbin needs JavaScript: all encryption and decryption happens in your browser.</div>
+  </noscript>
+  <p id="loading" class="nb-meta nb-loading" role="status"><span class="spinner-border spinner-border-sm" aria-hidden="true"></span>Loading</p>
+
+  <!-- New paste -->
+  <section id="create" aria-labelledby="create-title" hidden>
+    <h1 id="create-title" class="visually-hidden">New paste</h1>
+    <form id="create-form" novalidate>
+      <div id="error-banner" class="nb-note nb-tone-danger" role="alert" tabindex="-1" hidden></div>
+
+      <div class="nb-toolbar" aria-label="Paste settings">
+        <div class="nb-toolbar-settings">
+        <div class="nb-toolbar-field">
+          <label for="expiry">Expires:</label>
+          <select id="expiry" name="expiry" class="form-select">
+            <option value="300">5 minutes</option>
+            <option value="3600">1 hour</option>
+            <option value="86400" selected>1 day</option>
+            <option value="604800">1 week</option>
+            <option value="2592000">1 month</option>
+          </select>
+        </div>
+        <div class="nb-burn-setting">
+          <label class="nb-check" title="Deleted from the server after the configured number of authorized opens."><input id="burn" class="form-check-input" type="checkbox" aria-label="Burn after opening" aria-describedby="burn-help" aria-controls="burn-reads-field"><span id="burn-label">Burn after opening</span></label>
+          <div id="burn-reads-field" class="nb-toolbar-field nb-read-limit" hidden>
+            <label for="burn-reads" class="visually-hidden">Allowed opens before deletion</label>
+            <input id="burn-reads" class="form-control" type="number" min="1" max="1000" step="1" value="1" inputmode="numeric" aria-describedby="burn-reads-help" disabled>
+            <span id="burn-reads-unit">open</span>
+          </div>
+        </div>
+        <label class="nb-check" title="Allow encrypted comments. Requires a password."><input id="discussion" class="form-check-input" type="checkbox" aria-describedby="discussion-help">Discussion</label>
+        <div class="nb-password-setting">
+        <label class="nb-check" title="Readers need the password as well as the link. Send it separately."><input id="password-switch" class="form-check-input" type="checkbox" aria-describedby="password-help" aria-controls="password-row">Password</label>
+        <div id="password-row" class="nb-toolbar-password" hidden>
+          <label for="password" class="visually-hidden">Password</label>
+          <div class="input-group has-validation">
+            <input id="password" type="password" class="form-control" autocomplete="new-password" spellcheck="false" autocorrect="off" autocapitalize="off" placeholder="At least 8 characters" aria-describedby="password-error" aria-invalid="false">
+            <button id="password-reveal" type="button" class="btn nb-btn-ghost" aria-pressed="false" aria-label="Show password"><svg class="nb-i" aria-hidden="true"><use href="#i-eye"/></svg></button>
+            <div id="password-error" class="invalid-feedback">Use at least 8 characters.</div>
+          </div>
+        </div>
+        </div>
+        </div>
+        <div class="nb-toolbar-attachment">
+          <input id="file" type="file" class="nb-file-input" aria-label="Attach or replace a file">
+          <label id="attach" for="file" class="btn nb-btn-secondary"><svg class="nb-i" aria-hidden="true"><use href="#i-clip"/></svg><span id="attach-label">Attach a file</span></label>
+        </div>
+        <button id="create-submit" type="submit" class="btn nb-btn-primary"><svg class="nb-i" aria-hidden="true"><use href="#i-lock"/></svg><span>Create</span></button>
+      </div>
+      <span id="burn-help" class="visually-hidden">Delete the paste after the allowed number of authorized opens. Defaults to one open.</span>
+      <span id="burn-reads-help" class="visually-hidden">Allow 1 to 1,000 authorized opens before deletion. Reloads and interrupted downloads count as opens.</span>
+      <span id="password-help" class="visually-hidden">Readers need the password as well as the link. Send it separately.</span>
+      <span id="discussion-help" class="visually-hidden">Readers who know the password can leave encrypted comments.</span>
+
+      <div id="composer" class="nb-composer">
+        <div class="nb-editor-heading">
+          <label for="text">Editor</label>
+          <span class="nb-meta nb-kbd"><kbd id="kbd-mod">Ctrl</kbd> + <kbd>Enter</kbd> to create</span>
+        </div>
+        <textarea id="text" class="nb-editor" rows="20" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off" placeholder="Paste text here…" aria-invalid="false"></textarea>
+        <div class="nb-composer-bar">
+          <span id="file-chip" class="nb-file-chip" hidden>
+            <svg class="nb-i" aria-hidden="true"><use href="#i-file"/></svg>
+            <span id="file-name" class="nb-file-chip-name"></span>
+            <span id="file-size" class="nb-muted"></span>
+            <button id="file-remove" type="button" class="nb-chip-x" aria-label="Remove the attached file"><svg class="nb-i" aria-hidden="true"><use href="#i-x"/></svg></button>
+          </span>
+          <span class="nb-meta nb-drop-label">Drag and drop a file to attach it.</span>
+          <span id="char-count" class="nb-meta ms-auto">0 characters</span>
+        </div>
+        <div class="nb-drop-hint" aria-hidden="true"><svg class="nb-i" aria-hidden="true"><use href="#i-clip"/></svg>Drop to attach</div>
+      </div>
+      <div id="create-progress" class="nb-progress" hidden>
+        <div id="create-bar" class="progress" role="progressbar" aria-label="Upload progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+          <div id="create-bar-fill" class="progress-bar nb-w-0"></div>
+        </div>
+        <p id="create-status" class="nb-meta" role="status" aria-live="polite"></p>
+      </div>
+    </form>
+  </section>
+
+  <!-- Link created -->
+  <section id="result" aria-labelledby="result-title" hidden>
+    <header class="nb-hero">
+      <h1 id="result-title" class="nb-display" tabindex="-1">Paste created</h1>
+    </header>
+    <p id="result-copy-status" class="nb-note" role="status" hidden></p>
+
+    <div class="nb-card nb-pad">
+      <p id="share-label" class="nb-eyebrow">Share link</p>
+      <div class="nb-share-row">
+        <p id="share-link" class="nb-link" aria-labelledby="share-label" tabindex="0"><span id="share-server" class="nb-link-server"></span><span id="share-key" class="nb-link-key"></span></p>
+        <div class="nb-share-actions" role="group" aria-label="Share this paste">
+          <button id="copy-share" type="button" class="btn nb-btn-primary nb-copy-btn"><svg class="nb-i" aria-hidden="true"><use href="#i-copy"/></svg><span>Copy link</span></button>
+          <a id="result-email" class="btn nb-btn-secondary"><svg class="nb-i" aria-hidden="true"><use href="#i-mail"/></svg><span>Email</span></a>
+          <button id="result-qr" type="button" class="btn nb-btn-secondary" aria-haspopup="dialog" aria-controls="qr-dialog"><svg class="nb-i" aria-hidden="true"><use href="#i-qr"/></svg><span>QR code</span></button>
+        </div>
+      </div>
+      <ul class="nb-legend">
+        <li><span class="nb-swatch nb-swatch-server" aria-hidden="true"></span>Sent to the server to find the paste</li>
+        <li><span class="nb-swatch nb-swatch-key" aria-hidden="true"></span>The key, which stays in the browser</li>
+      </ul>
+
+      <hr class="nb-rule">
+      <dl class="nb-facts">
+        <dt>Expires</dt>
+        <dd id="result-expires"></dd>
+        <dt>Settings</dt>
+        <dd><ul id="result-chips" class="nb-chips"></ul></dd>
+      </dl>
+      <p id="result-password-note" class="nb-note" hidden><svg class="nb-i" aria-hidden="true"><use href="#i-lock"/></svg><span>Send the password separately from the link, for example in a different app.</span></p>
+    </div>
+
+    <details class="nb-details">
+      <summary>Delete link</summary>
+      <div class="nb-details-body">
+        <p class="nb-muted">Anyone with this link can delete the paste for everyone. Keep it to yourself.</p>
+        <div class="input-group">
+          <input id="delete-link" class="form-control nb-mono" readonly aria-label="Delete link">
+          <button id="copy-delete" type="button" class="btn nb-btn-ghost nb-copy-btn"><svg class="nb-i" aria-hidden="true"><use href="#i-copy"/></svg><span>Copy</span></button>
+        </div>
+      </div>
+    </details>
+
+    <a href="/" class="btn nb-btn-secondary">New paste</a>
+  </section>
+
+  <!-- View a paste -->
+  <section id="view" aria-labelledby="view-title" hidden>
+    <h1 id="view-title" class="visually-hidden" tabindex="-1">Encrypted paste</h1>
+
+    <div id="gate-burn" class="nb-gate" hidden>
+      <div class="nb-gate-icon nb-tone-warn"><svg class="nb-i" aria-hidden="true"><use href="#i-flame"/></svg></div>
+      <h2 id="burn-title" class="nb-gate-title" tabindex="-1">This paste burns after reading</h2>
+      <p class="nb-gate-text">Opening uses one of this paste’s allowed opens. It is deleted when the limit is reached. Interrupted downloads also count.</p>
+      <button id="burn-open" type="button" class="btn nb-btn-primary">Open paste</button>
+    </div>
+
+    <form id="gate-password" class="nb-gate" novalidate hidden>
+      <div class="nb-gate-icon"><svg class="nb-i" aria-hidden="true"><use href="#i-lock"/></svg></div>
+      <h2 class="nb-gate-title">Enter the password</h2>
+      <p class="nb-gate-text">The sender protected this paste with a password as well as the link.</p>
+      <div class="nb-gate-form">
+        <label for="view-password" class="visually-hidden">Password</label>
+        <div class="input-group has-validation">
+          <input id="view-password" type="password" class="form-control" autocomplete="off" spellcheck="false" autocorrect="off" autocapitalize="off" aria-describedby="view-password-error">
+          <button id="view-password-reveal" type="button" class="btn nb-btn-ghost" aria-pressed="false" aria-label="Show password"><svg class="nb-i" aria-hidden="true"><use href="#i-eye"/></svg></button>
+          <div id="view-password-error" class="invalid-feedback" role="alert">That password didn’t work. Check it and try again.</div>
+        </div>
+        <button type="submit" class="btn nb-btn-primary w-100 mt-3">Unlock</button>
+      </div>
+    </form>
+
+    <div id="view-progress" class="nb-gate" hidden>
+      <p class="nb-eyebrow justify-content-center"><span class="spinner-border spinner-border-sm" aria-hidden="true"></span><span id="view-stage">Downloading</span></p>
+      <div id="view-bar" class="progress" role="progressbar" aria-label="Download progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+        <div id="view-bar-fill" class="progress-bar nb-w-0"></div>
+      </div>
+      <p id="view-status" class="nb-meta mt-2" role="status" aria-live="polite"></p>
+    </div>
+
+    <div id="view-content" hidden>
+      <nav class="nb-paste-actions" aria-label="Paste actions">
+        <a href="/" class="btn nb-btn-secondary"><svg class="nb-i" aria-hidden="true"><use href="#i-new"/></svg><span>New</span></a>
+        <button id="view-clone" type="button" class="btn nb-btn-secondary"><svg class="nb-i" aria-hidden="true"><use href="#i-copy"/></svg><span>Clone</span></button>
+        <button id="view-raw" type="button" class="btn nb-btn-secondary"><svg class="nb-i" aria-hidden="true"><use href="#i-raw"/></svg><span>Raw text</span></button>
+        <button id="text-download" type="button" class="btn nb-btn-secondary"><svg class="nb-i" aria-hidden="true"><use href="#i-download"/></svg><span>Save document</span></button>
+        <a id="view-email" class="btn nb-btn-secondary"><svg class="nb-i" aria-hidden="true"><use href="#i-mail"/></svg><span>Email</span></a>
+        <button id="view-qr" type="button" class="btn nb-btn-secondary" aria-haspopup="dialog" aria-controls="qr-dialog"><svg class="nb-i" aria-hidden="true"><use href="#i-qr"/></svg><span>QR code</span></button>
+      </nav>
+      <header class="nb-view-head">
+        <p class="nb-eyebrow"><svg class="nb-i" aria-hidden="true"><use href="#i-lock"/></svg>Decrypted in this browser</p>
+        <ul id="view-chips" class="nb-chips"></ul>
+      </header>
+      <p id="burned-note" class="nb-note nb-tone-warn" hidden><svg class="nb-i" aria-hidden="true"><use href="#i-flame"/></svg><span>This paste is now deleted from the server. Copy or save what you need before you leave this page.</span></p>
+
+      <div id="view-text-card" class="nb-card nb-viewer" hidden>
+        <div class="nb-viewer-bar">
+          <span id="view-text-meta" class="nb-meta"></span>
+          <div class="nb-viewer-actions">
+            <button id="wrap-toggle" type="button" class="btn btn-sm nb-btn-ghost" aria-pressed="true"><svg class="nb-i" aria-hidden="true"><use href="#i-wrap"/></svg>Wrap</button>
+            <button id="text-copy" type="button" class="btn btn-sm nb-btn-ghost nb-copy-btn"><svg class="nb-i" aria-hidden="true"><use href="#i-copy"/></svg><span>Copy</span></button>
+          </div>
+        </div>
+        <p id="view-text-truncated" class="nb-note" hidden>Preview limited to 5,000 lines or 100,000 characters. Copy, Raw text, and Save document include the full text.</p>
+        <div id="view-text" class="nb-code nb-wrap" tabindex="0" role="region" aria-label="Decrypted text"></div>
+      </div>
+
+      <div id="view-file-card" class="nb-card nb-file" hidden>
+        <div class="nb-file-tile" aria-hidden="true"><svg class="nb-i"><use href="#i-file"/></svg></div>
+        <div class="nb-file-body">
+          <p id="view-filename" class="nb-file-name"></p>
+          <p class="nb-meta mb-0"><span id="view-filesize"></span> · <span id="view-mime"></span></p>
+        </div>
+        <button id="save-file" type="button" class="btn nb-btn-primary"><svg class="nb-i" aria-hidden="true"><use href="#i-download"/></svg><span>Save file</span></button>
+        <p id="file-saved" class="nb-file-saved nb-tone-ok" tabindex="-1" hidden><svg class="nb-i" aria-hidden="true"><use href="#i-check"/></svg>Verified and saved</p>
+        <p id="file-error" class="nb-note nb-tone-danger nb-file-error" role="alert" tabindex="-1" hidden></p>
+        <p class="nb-file-note">Nullbin never opens files. Only save files you expect.</p>
+      </div>
+
+      <!-- Discussion -->
+      <section id="comments" class="nb-discussion" aria-labelledby="discussion-title" hidden>
+        <div class="nb-discussion-head">
+          <h2 id="discussion-title" class="nb-h2">Discussion <span id="comment-count" class="nb-count"></span></h2>
+          <button id="comments-refresh" type="button" class="btn btn-sm nb-btn-ghost"><svg class="nb-i" aria-hidden="true"><use href="#i-refresh"/></svg><span>Refresh</span></button>
+        </div>
+        <p id="comments-error" class="nb-note nb-tone-danger" role="alert" hidden></p>
+        <p id="comments-empty" class="nb-muted" hidden>No comments yet.</p>
+        <p id="comments-hidden" class="nb-note" hidden></p>
+        <ol id="comment-list" class="nb-thread"></ol>
+
+        <form id="comment-form" class="nb-card nb-pad nb-comment-form" novalidate>
+          <p class="nb-eyebrow">Add a comment</p>
+          <p id="reply-bar" class="nb-reply-bar" hidden><svg class="nb-i" aria-hidden="true"><use href="#i-reply"/></svg><span>Replying to <strong id="reply-name"></strong></span><button id="reply-cancel" type="button" class="btn btn-link btn-sm nb-link-btn">Cancel</button></p>
+          <div class="row g-3">
+            <div class="col-sm-5">
+              <label for="comment-name" class="form-label">Name <span class="nb-muted">(optional)</span></label>
+              <input id="comment-name" class="form-control" maxlength="40" autocomplete="off" spellcheck="false" autocorrect="off" autocapitalize="off">
+            </div>
+            <div class="col-12">
+              <label for="comment-text" class="form-label">Comment</label>
+              <textarea id="comment-text" class="form-control" rows="4" maxlength="4000" spellcheck="false" autocorrect="off" autocapitalize="off" aria-describedby="comment-help comment-error" aria-invalid="false"></textarea>
+            </div>
+          </div>
+          <p id="comment-error" class="nb-note nb-tone-danger" role="alert" hidden></p>
+          <div class="nb-actions">
+            <span id="comment-help" class="nb-meta">Encrypted with this paste’s key and password. Names aren’t verified.</span>
+            <button id="comment-submit" type="submit" class="btn nb-btn-primary"><span>Post comment</span></button>
+          </div>
+        </form>
+      </section>
+    </div>
+  </section>
+
+  <!-- Delete a paste -->
+  <section id="delete" aria-labelledby="delete-title" hidden>
+    <div id="delete-ask" class="nb-gate">
+      <div class="nb-gate-icon nb-tone-danger"><svg class="nb-i" aria-hidden="true"><use href="#i-trash"/></svg></div>
+      <h1 id="delete-title" class="nb-gate-title" tabindex="-1">Delete this paste?</h1>
+      <p class="nb-gate-text">It’s removed from the server for everyone, including any comments. This can’t be undone.</p>
+      <p id="delete-error" class="nb-note nb-tone-danger" role="alert" hidden></p>
+      <div class="nb-actions">
+        <a href="/" class="btn nb-btn-secondary">Cancel</a>
+        <button id="delete-confirm" type="button" class="btn nb-btn-danger"><span>Delete paste</span></button>
+      </div>
+    </div>
+    <div id="delete-done" class="nb-gate" hidden>
+      <div class="nb-gate-icon nb-tone-ok"><svg class="nb-i" aria-hidden="true"><use href="#i-check"/></svg></div>
+      <h2 class="nb-gate-title" tabindex="-1">Paste deleted</h2>
+      <p class="nb-gate-text">It’s gone from the server. Anyone who opens the link now sees that it doesn’t exist.</p>
+      <a href="/" class="btn nb-btn-secondary">New paste</a>
+    </div>
+  </section>
+
+  <!-- Problems: missing paste, broken link, unknown page -->
+  <section id="problem" class="nb-gate" aria-labelledby="problem-title" hidden>
+    <div class="nb-gate-icon"><svg class="nb-i" aria-hidden="true"><use href="#i-alert"/></svg></div>
+    <h1 id="problem-title" class="nb-gate-title" tabindex="-1"></h1>
+    <p id="problem-text" class="nb-gate-text"></p>
+    <a href="/" class="btn nb-btn-primary">New paste</a>
+  </section>
+</main>
+
+<footer class="nb-shell nb-foot">
+  <span>Encrypted in your browser. The server stores ciphertext only.</span>
+  <nav class="nb-foot-links" aria-label="About Nullbin">
+    <a href="mailto:hi@jacobzymet.com?subject=Nullbin%20vulnerability%20report" class="nb-foot-link" title="Report a security flaw in the Nullbin software to its maintainer. To report a paste, contact this site's operator.">Report a vulnerability</a>
+    <a href="/api/v1/version" class="nb-foot-link" title="This website's version. Opens the server's version details.">Nullbin __NULLBIN_VERSION__</a>
+  </nav>
+</footer>
+
+<dialog id="qr-dialog" class="nb-dialog" aria-labelledby="qr-title" aria-describedby="qr-description">
+  <div class="nb-dialog-head">
+    <h2 id="qr-title" class="nb-h2">QR code</h2>
+    <button id="qr-close" type="button" class="btn nb-btn-ghost nb-dialog-close" aria-label="Close QR code" autofocus><svg class="nb-i" aria-hidden="true"><use href="#i-x"/></svg></button>
+  </div>
+  <div id="qr-image" class="nb-qr-image"></div>
+  <p id="qr-description" class="nb-muted">Scan to open this paste. The code includes its secret link; send any password separately.</p>
+  <p id="qr-link" class="nb-link" tabindex="0" aria-label="Full share link"></p>
+  <button id="qr-copy" type="button" class="btn nb-btn-primary nb-copy-btn w-100 mt-3"><svg class="nb-i" aria-hidden="true"><use href="#i-copy"/></svg><span>Copy link</span></button>
+</dialog>
+
+<div class="nb-toast-wrap">
+  <div id="toast" class="toast nb-toast" role="status" aria-live="polite" aria-atomic="true">
+    <div class="toast-body"><svg class="nb-i" aria-hidden="true"><use href="#i-check"/></svg><span id="toast-text"></span></div>
+  </div>
+</div>
+<p id="announce" class="visually-hidden" role="status" aria-live="polite"></p>
+</body>
+</html>

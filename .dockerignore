@@ -1,0 +1,26 @@
+# Keep the build context minimal and free of secrets/data.
+.git
+.github
+docs
+data
+**/.env
+**/.env.*
+**/*.pem
+**/*.key
+node_modules
+internal/assets/dist/*
+!internal/assets/dist/.gitkeep
+nullbin
+nullbin.exe
+dist
+out
+build
+*.test
+*.out
+.vscode
+.idea
+**/*.swp
+**/.DS_Store
+**/Thumbs.db
+web/dist
+web/generated

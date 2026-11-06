@@ -1,0 +1,39 @@
+# Runtime data (never commit paste data)
+/data/
+*.blob
+
+# Secrets and local config
+/docs/
+.env
+.env.*
+*.pem
+*.key
+
+# Build output
+/nullbin
+/nullbin.exe
+/dist/
+/web/dist/
+/web/generated/
+/out/
+/build/
+internal/assets/dist/*
+!internal/assets/dist/.gitkeep
+*.test
+*.out
+coverage.*
+
+# Dependencies
+node_modules/
+
+# Go fuzz cache (corpora we want to keep live in testdata/fuzz)
+/testdata/fuzz-cache/
+
+# Editors and OS files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db

@@ -1,0 +1,4 @@
+# Normalize line endings so builds are byte-identical on every platform.
+* text=auto eol=lf
+*.png binary
+*.ico binary

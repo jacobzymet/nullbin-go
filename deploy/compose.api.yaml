@@ -1,0 +1,91 @@
+# Option B: only the API and its HTTPS proxy run on this server.
+# The frontend is hosted independently. See README.md, Option B.
+#
+#   cp env.api.example .env.api
+#   # Set API_DOMAIN and FRONTEND_ORIGIN in .env.api.
+#   VERSION="$(git describe --tags)" docker compose --env-file .env.api -f compose.api.yaml up -d --build
+#
+name: nullbin
+
+services:
+  nullbin:
+    # Built from this checkout.
+    image: nullbin-api:local
+    build:
+      context: ..
+      target: backend
+      args:
+        VERSION: ${VERSION:-self-built}
+    restart: unless-stopped
+    read_only: true
+    user: "65532:65532"
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      NULLBIN_API_ONLY: "true"
+      NULLBIN_FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:?Set FRONTEND_ORIGIN in deploy/.env.api}
+      NULLBIN_BEHIND_HTTPS: "true"
+      # Only Caddy (fixed address below) can reach Nullbin, so only its
+      # X-Forwarded-For is trusted. Rate limits then see real client IPs.
+      NULLBIN_TRUSTED_PROXIES: "172.30.53.10"
+      NULLBIN_MAX_SIZE: ${MAX_SIZE:-100MiB}
+      NULLBIN_MAX_STORAGE: ${MAX_STORAGE:-10GiB}
+      NULLBIN_MAX_PENDING: ${MAX_PENDING:-64}
+    volumes:
+      - nullbin-data:/data
+    networks:
+      backend:
+        ipv4_address: 172.30.53.20
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+  caddy:
+    # Caddy without a shell or tools, as a non-root user (Dockerfile, proxy).
+    image: nullbin-proxy:local
+    build:
+      context: ..
+      target: proxy
+    restart: unless-stopped
+    depends_on:
+      nullbin:
+        condition: service_healthy
+    # Non-root with no capabilities; this lets it bind ports 80 and 443.
+    user: "65532:65532"
+    sysctls:
+      net.ipv4.ip_unprivileged_port_start: 80
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      DOMAIN: ${API_DOMAIN:?Set API_DOMAIN in deploy/.env.api}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile.api:/etc/caddy/Caddyfile:ro
+      - proxy-data:/data
+      - proxy-config:/config
+    tmpfs:
+      - /tmp
+    networks:
+      frontend: {}
+      backend:
+        ipv4_address: 172.30.53.10
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+networks:
+  frontend: {}
+  backend:
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.30.53.0/24
+
+volumes:
+  nullbin-data:
+  # Caddy's certificates and state.
+  proxy-data:
+  proxy-config:

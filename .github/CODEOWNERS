@@ -1,0 +1,33 @@
+# Changes to these paths require review by the maintainer.
+# See CONTRIBUTING.md: crypto, storage, headers, workflows and dependencies
+# always need explicit maintainer review.
+
+*                         @jacobzymet
+
+# Crypto module (blob format, key derivation, encryption, links)
+/web/src/crypto.ts        @jacobzymet
+/web/src/format.ts        @jacobzymet
+/web/src/link.ts          @jacobzymet
+/web/src/sodium.ts        @jacobzymet
+/web/src/comments.ts      @jacobzymet
+/web/test/                @jacobzymet
+
+# Storage layer
+/internal/storage/        @jacobzymet
+
+# HTTP headers, limits and API
+/internal/server/         @jacobzymet
+
+# Workflows, Dependabot, ownership
+/.github/                 @jacobzymet
+
+# Dependencies, build and release reproducibility
+/go.mod                   @jacobzymet
+/package.json             @jacobzymet
+/package-lock.json        @jacobzymet
+/.npmrc                   @jacobzymet
+/.nvmrc                   @jacobzymet
+/tsconfig.json            @jacobzymet
+/Dockerfile               @jacobzymet
+/deploy/                 @jacobzymet
+/web/build.mjs            @jacobzymet
