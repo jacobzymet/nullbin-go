@@ -2,7 +2,7 @@
 # a domain name pointing at it. Step-by-step guide: README.md, Option A.
 #
 #   cp env.example .env     # then set DOMAIN
-#   VERSION="$(git describe --tags)" docker compose up -d --build
+#   sudo ./nullbin start           (later: sudo ./nullbin update; see ./nullbin help)
 #
 # Layout:
 #   internet ──443──▶ caddy (static frontend + HTTPS)

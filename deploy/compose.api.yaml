@@ -3,7 +3,7 @@
 #
 #   cp env.api.example .env.api
 #   # Set API_DOMAIN and FRONTEND_ORIGIN in .env.api.
-#   VERSION="$(git describe --tags)" docker compose --env-file .env.api -f compose.api.yaml up -d --build
+#   sudo ./nullbin start           (later: sudo ./nullbin update; see ./nullbin help)
 #
 name: nullbin
 

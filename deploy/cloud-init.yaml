@@ -46,4 +46,4 @@ runcmd:
     test -n "$version"
     git clone --branch "$version" https://github.com/jacobzymet/nullbin-go.git /opt/nullbin
   - [install, -m, "0600", /opt/nullbin-settings.env, /opt/nullbin/deploy/.env]
-  - [sh, -euc, "cd /opt/nullbin/deploy && VERSION=$(git describe --tags) docker compose up -d --build"]
+  - [/opt/nullbin/deploy/nullbin, start]

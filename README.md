@@ -202,14 +202,13 @@ In nano, save with **Ctrl+O**, **Enter**, then exit with **Ctrl+X**.
 From `nullbin/deploy`, run:
 
 ```bash
-sudo VERSION="$(git describe --tags)" docker compose up -d --build
+sudo ./nullbin start
 ```
 
-The `VERSION` part records the release you installed. It appears at the
-bottom of every page, such as **Nullbin v1.2.3**; that link opens the
-server's own version details. The first start
-takes a few minutes. Open `https://paste.example.com` and create a test
-paste. Caddy creates and renews HTTPS certificates for you.
+The first start takes a few minutes. Open `https://paste.example.com` and
+create a test paste. Caddy creates and renews HTTPS certificates for you.
+The bottom of every page shows the installed version, such as
+**Nullbin v1.2.3**.
 
 You now have two containers:
 
@@ -226,47 +225,46 @@ The containers start again automatically when the server reboots.
 
 1. Read the new release's notes on the
    [Releases page](https://github.com/jacobzymet/nullbin-go/releases). They
-   say if an update needs anything beyond these steps.
+   say if an update needs anything beyond this step.
 2. Connect to the server with SSH and run:
 
    ```bash
    cd ~/nullbin/deploy
-   VERSION=$(curl -fsSL https://api.github.com/repos/jacobzymet/nullbin-go/releases/latest | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p')
-   echo "Updating to $VERSION"
-   git fetch --tags
-   git checkout "$VERSION"
-   sudo VERSION="$(git describe --tags)" docker compose up -d --build
+   sudo ./nullbin update
    ```
 
+   It shows the installed and the new version, switches to the new
+   release, rebuilds, and waits until Nullbin is running again.
 3. Open your site and create a test paste.
 
 Your `.env` file and pastes are kept. The site is unavailable for a few
-seconds while the new containers start. If you set the server up with
-[cloud-init](#new-ubuntu-vm-with-cloud-init), Nullbin is in
-`/opt/nullbin/deploy` instead: use `cd /opt/nullbin/deploy` and put `sudo`
-before each `git` command, including the one inside `$(...)`.
+seconds while the new containers start. On a
+[cloud-init](#new-ubuntu-vm-with-cloud-init) server, Nullbin is in
+`/opt/nullbin/deploy`; run `cd /opt/nullbin/deploy` instead.
 
-**To go back to an earlier release**, run the same commands with that
-version instead of the `VERSION` lookup, for example `git checkout v1.2.2`.
-Check that release's notes first; a release that changes how pastes are
-stored will say whether going back is safe.
+**To go back to an earlier release**, give its version, for example
+`sudo ./nullbin update v1.2.2`. Check that release's notes first; a release
+that changes how pastes are stored will say whether going back is safe.
 
 ### Check, stop, and maintain it
 
-Run these **on the server, from `nullbin/deploy`**:
+Run these **on the server, from `nullbin/deploy`** (`/opt/nullbin/deploy` on
+cloud-init servers):
 
 | Task | Command |
 |---|---|
-| Show the installed version | `git describe --tags`, or look at the bottom of any page |
-| Check container status | `sudo docker compose ps` |
-| Read recent logs | `sudo docker compose logs --tail 100` |
-| Stop | `sudo docker compose down` |
-| Start again after stopping | `sudo docker compose up -d` |
+| Show the installed version and container status | `sudo ./nullbin status` |
+| Read recent logs | `sudo ./nullbin logs` |
+| Stop | `sudo ./nullbin stop` |
+| Start again after stopping | `sudo ./nullbin start` |
+| Remove a reported paste | `sudo ./nullbin delete <paste id>` ([details](#remove-a-reported-paste)) |
 | Free disk space used by old builds | `sudo docker image prune -f && sudo docker builder prune -f` |
+| List every command | `./nullbin help` |
 
-Stopping preserves pastes. **Adding `-v` to `down` deletes the data volume
-and all pastes.** Freeing disk space removes only unused images and build
-files, never pastes; the next update rebuilds a little more slowly.
+Stopping keeps pastes. Freeing disk space removes only unused images and
+build files, never pastes; the next update rebuilds a little more slowly.
+The only command that deletes all pastes is `docker compose down -v`,
+which removes the data volume; `nullbin` never uses it.
 
 ## Option B: Separate hosting
 
@@ -328,8 +326,10 @@ Save and close the file. In nano: **Ctrl+O**, **Enter**, then **Ctrl+X**.
 Start the API from `nullbin/deploy`:
 
 ```bash
-sudo VERSION="$(git describe --tags)" docker compose --env-file .env.api -f compose.api.yaml up -d --build
+sudo ./nullbin start
 ```
+
+The script sees `.env.api` and starts the separate-API layout.
 
 **Checkpoint:** open `https://api.example.com/api/v1/version`. You should
 get JSON containing `"mode":"api"` and the version you installed. The API's home page returning **404
@@ -430,11 +430,7 @@ the frontend:
 
    ```bash
    cd ~/nullbin/deploy
-   VERSION=$(curl -fsSL https://api.github.com/repos/jacobzymet/nullbin-go/releases/latest | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p')
-   echo "Updating to $VERSION"
-   git fetch --tags
-   git checkout "$VERSION"
-   sudo VERSION="$(git describe --tags)" docker compose --env-file .env.api -f compose.api.yaml up -d --build
+   sudo ./nullbin update
    ```
 
    Write down the printed version.
@@ -451,18 +447,17 @@ the frontend:
    [upload](#3-upload-the-frontend-to-a-static-host) the new output folder.
 4. Open your site and create a test paste.
 
-Pastes and `.env.api` are kept. To go back to an earlier release, use the
-same steps with that version, after checking its release notes.
+Pastes and `.env.api` are kept. To go back to an earlier release, run
+`sudo ./nullbin update v1.2.2` on the API server and build the frontend
+from the same version, after checking its release notes.
 
-To check or stop the API, use the
-[Option A commands](#check-stop-and-maintain-it) with
-`--env-file .env.api -f compose.api.yaml` added after `docker compose`,
-for example `sudo docker compose --env-file .env.api -f compose.api.yaml ps`.
+Every [Option A command](#check-stop-and-maintain-it) works the same way on
+the API server.
 
 | If you change… | You must also… |
 |---|---|
 | The API address | Rebuild and upload the frontend with the new `NULLBIN_API_ORIGIN` (or Docker `API_ORIGIN`). |
-| The frontend address | Update `FRONTEND_ORIGIN` in `.env.api` and rerun the API start command. Existing share links still use the old website address. |
+| The frontend address | Update `FRONTEND_ORIGIN` in `.env.api` and run `sudo ./nullbin start`. Existing share links still use the old website address. |
 
 ## Storage and upload limits
 
@@ -479,7 +474,7 @@ Edit the configuration **on the API server, in `nullbin/deploy`**:
 
 Set `MAX_STORAGE` **below the data volume's capacity**. Leave space for the
 operating system, filesystem overhead, container images, and other files.
-After editing, rerun your option's start command to apply the changes.
+After editing, run `sudo ./nullbin start` to apply the changes.
 
 Pastes live in a Docker volume on the API server. Ordinary updates and
 stops preserve it; `docker compose down -v` deletes it. Run **one API
@@ -522,15 +517,12 @@ which is the key.
 **On the server, from `nullbin/deploy`**, replace the example ID and run:
 
 ```bash
-sudo docker compose stop nullbin
-sudo docker compose run --rm --no-deps nullbin delete 0123456789abcdef0123456789abcdef
-sudo docker compose start nullbin
+sudo ./nullbin delete 0123456789abcdef0123456789abcdef
 ```
 
 It prints `Deleted.` and the paste, with its comments, is gone. The API is
-offline for a few seconds; the website stays up. For Option B, add
-`--env-file .env.api -f compose.api.yaml` after `docker compose` in all
-three commands.
+offline for a few seconds while it runs; the website stays up. It works
+the same in both layouts.
 
 ### What the server knows
 
@@ -718,13 +710,13 @@ and [link encoding](web/src/link.ts).
 
 | Symptom | What to check |
 |---|---|
-| The hosted site does not open or HTTPS is not ready | Check that DNS points to the correct host and ports 80/443 are open in both firewalls. For Option A, check `sudo docker compose ps` and `sudo docker compose logs --tail 100` from `nullbin/deploy`. |
+| The hosted site does not open or HTTPS is not ready | Check that DNS points to the correct host and ports 80/443 are open in both firewalls. On the server, check `sudo ./nullbin status` and `sudo ./nullbin logs` from `nullbin/deploy`. |
 | The API home page returns 404 | Expected in Option B. Check `/api/v1/version` instead; it should report `"mode":"api"`. |
 | The frontend opens, but creating or opening pastes fails | Check the API version endpoint, the exact `FRONTEND_ORIGIN`, and the API address used to build the frontend. Rebuild and upload the frontend after changing the API address. |
 | A share link opens a hosting provider's 404 page | Make sure the full output folder was uploaded, including `_redirects`, and that the host applies its routing rules. |
-| The version line prints only `Installing` or `Updating to` | The server could not reach GitHub, or no release has been published yet. Check the [Releases page](https://github.com/jacobzymet/nullbin-go/releases), then run the commands again. Do not continue without a version. |
-| `git checkout` says your local changes would be overwritten | A file that came with Nullbin, such as a Caddyfile, was edited. Run `git status` to see which one; `git stash` sets the edit aside so the update can continue. `.env` and `.env.api` are never affected. |
-| `git` reports "Permission denied" or "dubious ownership" | Run the command from the folder you cloned into. On a cloud-init server, use `/opt/nullbin/deploy` and put `sudo` before each `git` command. |
+| The install's version line prints only `Installing`, or `nullbin update` cannot look up the latest release | The server could not reach GitHub, or no release has been published yet. Check the [Releases page](https://github.com/jacobzymet/nullbin-go/releases), then run the commands again. Do not continue without a version. |
+| `nullbin update` says files that came with Nullbin were edited | A file such as a Caddyfile was changed by hand, and updating would overwrite it. It lists the files; `git -C ~/nullbin stash` sets the edits aside so the update can continue. `.env` and `.env.api` are never affected. |
+| `nullbin` says to run it with sudo | It needs administrator rights for Docker: run `sudo ./nullbin ...` from the `deploy` folder. |
 | The server is running out of disk space | Free space used by old builds with `sudo docker image prune -f && sudo docker builder prune -f`. This never deletes pastes. |
 
 ## More deployment options
@@ -782,9 +774,9 @@ Option A on a new Ubuntu 24.04 VM. Set `DOMAIN` in its marked settings block,
 point that domain at the VM, and provide the file as cloud-init/user data
 when creating the VM. It installs Docker, configures the firewall, enables
 host updates, downloads the latest Nullbin release, builds it and starts
-both containers. Nullbin is installed in `/opt/nullbin`, owned by root.
-Update it later as described in [Option A](#update-to-a-new-release),
-from `/opt/nullbin/deploy` with `sudo` before each `git` command.
+both containers. Nullbin is installed in `/opt/nullbin`. Manage and update
+it with the [same commands](#check-stop-and-maintain-it), run from
+`/opt/nullbin/deploy`.
 
 The Compose setup is tested in CI. The complete cloud-init boot process
 has not been tested on a real cloud VM.

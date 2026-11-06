@@ -1,0 +1,135 @@
+#!/usr/bin/env bash
+# Nullbin server helper. Run it with sudo from the deploy folder:
+#
+#   sudo ./nullbin start            build and start the installed release
+#   sudo ./nullbin update           update to the latest release
+#   sudo ./nullbin update v1.2.3    switch to a specific release (or back to one)
+#   sudo ./nullbin status           installed version and container status
+#   sudo ./nullbin logs             recent logs
+#   sudo ./nullbin stop             stop Nullbin (pastes are kept)
+#   sudo ./nullbin delete <id>      remove a reported paste by its ID
+#
+# It works with both layouts: Option A uses deploy/.env, Option B uses
+# deploy/.env.api. Git runs as the owner of the checkout, so sudo never
+# leaves root-owned files behind.
+set -euo pipefail
+
+# Everything runs inside main, which bash reads completely before running:
+# "update" replaces this file with the new release's copy while it runs.
+main() {
+  local deploy repo owner
+  deploy=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+  repo=$(dirname -- "$deploy")
+
+  die() { echo "nullbin: $*" >&2; exit 1; }
+
+  [[ $# -ge 1 ]] || { usage; exit 2; }
+  local cmd=$1
+  shift
+  [[ $cmd == help || $cmd == -h || $cmd == --help ]] && { usage; exit 0; }
+  [[ $EUID -eq 0 ]] || die "run it with sudo: sudo ./nullbin $cmd $*"
+  [[ -d $repo/.git ]] || die "$repo is not a Git checkout of Nullbin"
+
+  # Git as the checkout's owner, so files it writes stay theirs.
+  owner=$(stat -c %U -- "$repo/.git")
+  g() {
+    if [[ $owner == root ]]; then
+      git -C "$repo" "$@"
+    else
+      sudo -u "$owner" -- git -C "$repo" "$@"
+    fi
+  }
+
+  # Which layout: Option A (.env) or Option B (.env.api).
+  local -a compose
+  if [[ -f $deploy/.env && -f $deploy/.env.api ]]; then
+    die "both deploy/.env and deploy/.env.api exist; remove the one you do not use"
+  elif [[ -f $deploy/.env ]]; then
+    compose=(docker compose -f "$deploy/compose.yaml")
+  elif [[ -f $deploy/.env.api ]]; then
+    compose=(docker compose --env-file "$deploy/.env.api" -f "$deploy/compose.api.yaml")
+  else
+    die "no configuration yet: copy env.example to .env (Option A) or env.api.example to .env.api (Option B) and edit it"
+  fi
+
+  installed() { g describe --tags --always 2>/dev/null || echo unknown; }
+
+  start() {
+    local version
+    version=$(installed)
+    echo "Building and starting Nullbin $version. The first build takes a few minutes."
+    VERSION=$version "${compose[@]}" up -d --build --wait --wait-timeout 600
+    echo "Nullbin $version is running."
+  }
+
+  latest_release() {
+    local url slug
+    url=$(g remote get-url origin)
+    url=${url%.git}
+    url=${url%/}
+    slug=${url#https://github.com/}
+    slug=${slug#git@github.com:}
+    [[ $slug =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || return 1
+    curl -fsSL "https://api.github.com/repos/$slug/releases/latest" |
+      grep -o '"tag_name": *"[^"]*"' | head -n 1 | cut -d '"' -f 4
+  }
+
+  case $cmd in
+    start)
+      start
+      ;;
+    update)
+      local target current changes
+      current=$(installed)
+      if [[ $# -ge 1 ]]; then
+        target=$1
+      else
+        target=$(latest_release || true)
+        [[ -n $target ]] || die "could not look up the latest release. Check that this server can reach github.com, or give a version from the Releases page: sudo ./nullbin update v1.2.3"
+      fi
+      [[ $target =~ ^v[0-9]+[.][0-9]+[.][0-9]+$ ]] || die "not a release version: $target (expected something like v1.2.3)"
+      echo "Installed: $current"
+      echo "Target:    $target"
+      g fetch --quiet --tags origin || echo "Could not reach GitHub; using releases already downloaded."
+      g rev-parse --quiet --verify "refs/tags/$target^{commit}" >/dev/null || die "release $target was not found"
+      changes=$(g status --porcelain --untracked-files=no)
+      [[ -z $changes ]] || die "files that came with Nullbin were edited, so the update would overwrite them:
+$changes
+See them with: git -C $repo diff
+Set them aside with: git -C $repo stash"
+      g -c advice.detachedHead=false checkout --quiet "$target"
+      start
+      ;;
+    status)
+      echo "Installed version: $(installed)"
+      "${compose[@]}" ps
+      ;;
+    logs)
+      "${compose[@]}" logs --tail "${1:-100}"
+      ;;
+    stop)
+      "${compose[@]}" down
+      echo "Stopped. Pastes are kept; start again with: sudo ./nullbin start"
+      ;;
+    delete)
+      local id=${1:-}
+      [[ $id =~ ^[0-9a-f]{32}$ ]] || die "give the paste ID: the 32 characters after /p/ or /d/ in its link, without the part after #"
+      "${compose[@]}" stop nullbin
+      local status=0
+      "${compose[@]}" run --rm --no-deps nullbin delete "$id" || status=$?
+      "${compose[@]}" start nullbin
+      return "$status"
+      ;;
+    *)
+      usage
+      exit 2
+      ;;
+  esac
+}
+
+usage() {
+  sed -n '2,10p' "${BASH_SOURCE[0]}" | cut -c 3-
+}
+
+main "$@"
+exit
