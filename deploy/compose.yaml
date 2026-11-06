@@ -1,8 +1,8 @@
 # Nullbin with automatic HTTPS, for any server with Docker, a public IP and
 # a domain name pointing at it. Step-by-step guide: README.md, Option A.
 #
-#   cp env.example .env     # then set DOMAIN
-#   sudo ./nullbin start           (later: sudo ./nullbin update; see ./nullbin help)
+#   sudo ./nullbin setup paste.example.com
+#   sudo ./nullbin start            (later: sudo ./nullbin update; see ./nullbin help)
 #
 # Layout:
 #   internet ──443──▶ caddy (static frontend + HTTPS)

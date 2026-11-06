@@ -1,9 +1,8 @@
 # Option B: only the API and its HTTPS proxy run on this server.
 # The frontend is hosted independently. See README.md, Option B.
 #
-#   cp env.api.example .env.api
-#   # Set API_DOMAIN and FRONTEND_ORIGIN in .env.api.
-#   sudo ./nullbin start           (later: sudo ./nullbin update; see ./nullbin help)
+#   sudo ./nullbin setup-api api.example.com https://paste.example.com
+#   sudo ./nullbin start            (later: sudo ./nullbin update; see ./nullbin help)
 #
 name: nullbin
 

@@ -198,7 +198,7 @@ jobs:
       - name: Start deploy/compose.yaml exactly as a user would (DOMAIN=localhost)
         working-directory: deploy
         run: |
-          printf 'DOMAIN=localhost\nMAX_SIZE=100MiB\n' > .env
+          sudo ./nullbin setup localhost
           VERSION=v0.0.0-ci docker compose up -d --build --wait --wait-timeout 300
       - name: Lint the nullbin helper script
         run: shellcheck deploy/nullbin
@@ -352,6 +352,9 @@ jobs:
           if sudo ./nullbin update main; then exit 1; fi
           if sudo ./nullbin delete not-an-id; then exit 1; fi
           if ./nullbin status; then exit 1; fi  # needs sudo
+          if sudo ./nullbin setup other.example.com; then exit 1; fi  # already configured
+          sudo ./nullbin cleanup
+          curl -fsSk https://localhost/api/v1/version | grep -q '"version":"v9.9.9"'  # still running
       - name: Logs
         if: always()
         working-directory: deploy
@@ -367,7 +370,7 @@ jobs:
       - name: Start the separate API layout
         working-directory: deploy
         run: |
-          printf 'API_DOMAIN=localhost\nFRONTEND_ORIGIN=https://paste.example.com\n' > .env.api
+          sudo ./nullbin setup-api localhost https://paste.example.com
           VERSION=v0.0.0-ci docker compose --env-file .env.api -f compose.api.yaml up -d --build --wait --wait-timeout 300
           test "$(docker inspect nullbin-caddy-1 --format '{{.Config.User}} {{.HostConfig.ReadonlyRootfs}} {{.HostConfig.CapAdd}}')" = "65532:65532 true []"
           if docker exec nullbin-caddy-1 sh -c true 2>/dev/null; then echo 'the proxy has a shell'; exit 1; fi

@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Nullbin server helper. Run it with sudo from the deploy folder:
 #
+#   sudo ./nullbin setup paste.example.com    configure the one-server layout
+#   sudo ./nullbin setup-api api.example.com https://paste.example.com
+#                                             configure the separate-API layout
 #   sudo ./nullbin start            build and start the installed release
 #   sudo ./nullbin update           update to the latest release
 #   sudo ./nullbin update v1.2.3    switch to a specific release (or back to one)
@@ -8,10 +11,11 @@
 #   sudo ./nullbin logs             recent logs
 #   sudo ./nullbin stop             stop Nullbin (pastes are kept)
 #   sudo ./nullbin delete <id>      remove a reported paste by its ID
+#   sudo ./nullbin cleanup          free disk space used by old builds
 #
-# It works with both layouts: Option A uses deploy/.env, Option B uses
-# deploy/.env.api. Git runs as the owner of the checkout, so sudo never
-# leaves root-owned files behind.
+# Option A uses deploy/.env and Option B deploy/.env.api; every command picks
+# the right one. Git runs as the owner of the checkout, so sudo never leaves
+# root-owned files behind.
 set -euo pipefail
 
 # Everything runs inside main, which bash reads completely before running:
@@ -41,16 +45,52 @@ main() {
   }
 
   # Which layout: Option A (.env) or Option B (.env.api).
-  local -a compose
-  if [[ -f $deploy/.env && -f $deploy/.env.api ]]; then
-    die "both deploy/.env and deploy/.env.api exist; remove the one you do not use"
-  elif [[ -f $deploy/.env ]]; then
-    compose=(docker compose -f "$deploy/compose.yaml")
-  elif [[ -f $deploy/.env.api ]]; then
-    compose=(docker compose --env-file "$deploy/.env.api" -f "$deploy/compose.api.yaml")
-  else
-    die "no configuration yet: copy env.example to .env (Option A) or env.api.example to .env.api (Option B) and edit it"
-  fi
+  local -a compose=()
+  layout() {
+    if [[ -f $deploy/.env && -f $deploy/.env.api ]]; then
+      die "both deploy/.env and deploy/.env.api exist; remove the one you do not use"
+    elif [[ -f $deploy/.env ]]; then
+      compose=(docker compose -f "$deploy/compose.yaml")
+    elif [[ -f $deploy/.env.api ]]; then
+      compose=(docker compose --env-file "$deploy/.env.api" -f "$deploy/compose.api.yaml")
+    else
+      die "not configured yet: run sudo ./nullbin setup paste.example.com (or setup-api for the separate-API layout)"
+    fi
+  }
+
+  # A lowercase domain name with at least one dot, or localhost for testing.
+  valid_domain() {
+    local d=$1
+    [[ $d == localhost ]] && return 0
+    [[ ${#d} -le 253 && $d =~ ^([a-z0-9]([a-z0-9-]*[a-z0-9])?[.])+[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]]
+  }
+
+  # Writes a configuration file from its example, replacing whole lines that
+  # start with a setting's name. The file belongs to the checkout's owner.
+  write_config() {
+    local example=$1 target=$2
+    shift 2
+    [[ ! -e $deploy/.env && ! -e $deploy/.env.api ]] ||
+      die "already configured: edit deploy/.env or deploy/.env.api, or delete it to start over"
+    local tmp line setting found
+    tmp=$(mktemp "$deploy/.config.XXXXXX")
+    while IFS= read -r line || [[ -n $line ]]; do
+      for setting in "$@"; do
+        if [[ $line == "${setting%%=*}="* ]]; then
+          line=$setting
+        fi
+      done
+      printf '%s\n' "$line"
+    done <"$deploy/$example" >"$tmp"
+    for setting in "$@"; do
+      found=$(grep -c -F -x -- "$setting" "$tmp" || true)
+      [[ $found -eq 1 ]] || { rm -f -- "$tmp"; die "could not set ${setting%%=*} in $example"; }
+    done
+    chmod 600 -- "$tmp"
+    chown -- "$owner" "$tmp"
+    mv -- "$tmp" "$deploy/$target"
+    echo "Wrote deploy/$target. To change settings later, edit it and run: sudo ./nullbin start"
+  }
 
   installed() { g describe --tags --always 2>/dev/null || echo unknown; }
 
@@ -75,10 +115,40 @@ main() {
   }
 
   case $cmd in
+    setup)
+      local domain=${1:-}
+      domain=${domain,,}
+      valid_domain "$domain" ||
+        die "give your domain name only, such as: sudo ./nullbin setup paste.example.com (no https:// and no slash)"
+      write_config env.example .env "DOMAIN=$domain"
+      echo "Next: point $domain at this server, then run: sudo ./nullbin start"
+      ;;
+    setup-api)
+      local api=${1:-} origin=${2:-} host port
+      api=${api,,}
+      origin=${origin,,}
+      valid_domain "$api" ||
+        die "usage: sudo ./nullbin setup-api api.example.com https://paste.example.com (the API's domain name, then the website's exact address)"
+      [[ $origin == https://* ]] || die "the website address must start with https://, such as https://paste.example.com"
+      host=${origin#https://}
+      port=
+      if [[ $host == *:* ]]; then
+        port=${host##*:}
+        host=${host%:*}
+        [[ $port =~ ^[1-9][0-9]{0,4}$ && $port -le 65535 && $port -ne 443 ]] ||
+          die "invalid port in $origin (leave out :443)"
+      fi
+      valid_domain "$host" ||
+        die "the website address must be https:// and a domain name, with no path or trailing slash, such as https://paste.example.com"
+      write_config env.api.example .env.api "API_DOMAIN=$api" "FRONTEND_ORIGIN=$origin"
+      echo "Next: point $api at this server, then run: sudo ./nullbin start"
+      ;;
     start)
+      layout
       start
       ;;
     update)
+      layout
       local target current changes
       current=$(installed)
       if [[ $# -ge 1 ]]; then
@@ -101,17 +171,21 @@ Set them aside with: git -C $repo stash"
       start
       ;;
     status)
+      layout
       echo "Installed version: $(installed)"
       "${compose[@]}" ps
       ;;
     logs)
+      layout
       "${compose[@]}" logs --tail "${1:-100}"
       ;;
     stop)
+      layout
       "${compose[@]}" down
       echo "Stopped. Pastes are kept; start again with: sudo ./nullbin start"
       ;;
     delete)
+      layout
       local id=${1:-}
       [[ $id =~ ^[0-9a-f]{32}$ ]] || die "give the paste ID: the 32 characters after /p/ or /d/ in its link, without the part after #"
       "${compose[@]}" stop nullbin
@@ -119,6 +193,12 @@ Set them aside with: git -C $repo stash"
       "${compose[@]}" run --rm --no-deps nullbin delete "$id" || status=$?
       "${compose[@]}" start nullbin
       return "$status"
+      ;;
+    cleanup)
+      # Unused images and the build cache only; never volumes, so never pastes.
+      docker image prune -f
+      docker builder prune -f
+      echo "Done. Pastes are never affected; the next update rebuilds a little more slowly."
       ;;
     *)
       usage
@@ -128,7 +208,7 @@ Set them aside with: git -C $repo stash"
 }
 
 usage() {
-  sed -n '2,10p' "${BASH_SOURCE[0]}" | cut -c 3-
+  sed -n '2,14p' "${BASH_SOURCE[0]}" | cut -c 3-
 }
 
 main "$@"

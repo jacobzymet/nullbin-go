@@ -182,20 +182,16 @@ a private fork, clone it with a GitHub account that has access and set
 
 ### 2. Set your domain
 
-Still in `nullbin/deploy`, create and edit the configuration:
+Still in `nullbin/deploy`, run this with your domain name, **without
+`https://` or a trailing slash**:
 
 ```bash
-cp env.example .env
-nano .env
+sudo ./nullbin setup paste.example.com
 ```
 
-Set `DOMAIN` to your domain name, **without `https://` or a trailing slash**:
-
-```dotenv
-DOMAIN=paste.example.com
-```
-
-In nano, save with **Ctrl+O**, **Enter**, then exit with **Ctrl+X**.
+It writes the configuration file, `deploy/.env`. The defaults suit most
+servers; to change [storage limits](#storage-and-upload-limits) later, edit
+that file and run `sudo ./nullbin start`.
 
 ### 3. Start and check the site
 
@@ -258,7 +254,7 @@ cloud-init servers):
 | Stop | `sudo ./nullbin stop` |
 | Start again after stopping | `sudo ./nullbin start` |
 | Remove a reported paste | `sudo ./nullbin delete <paste id>` ([details](#remove-a-reported-paste)) |
-| Free disk space used by old builds | `sudo docker image prune -f && sudo docker builder prune -f` |
+| Free disk space used by old builds | `sudo ./nullbin cleanup` |
 | List every command | `./nullbin help` |
 
 Stopping keeps pastes. Freeing disk space removes only unused images and
@@ -303,25 +299,12 @@ version** (such as `v1.2.3`): you will build the frontend from the same one.
 If it prints only `Installing`, no release was found; see
 [troubleshooting](#troubleshooting).
 
-Create and edit the API configuration:
+Configure the API with its own domain name, then the website's exact
+address (with `https://`, and no path or trailing slash):
 
 ```bash
-cp env.api.example .env.api
-nano .env.api
+sudo ./nullbin setup-api api.example.com https://paste.example.com
 ```
-
-Set these two values:
-
-```dotenv
-API_DOMAIN=api.example.com
-FRONTEND_ORIGIN=https://paste.example.com
-```
-
-- `API_DOMAIN` is a **domain name only**: no `https://`, path, or trailing slash.
-- `FRONTEND_ORIGIN` is the **exact website origin**: include `https://`,
-  with no path or trailing slash.
-
-Save and close the file. In nano: **Ctrl+O**, **Enter**, then **Ctrl+X**.
 
 Start the API from `nullbin/deploy`:
 
@@ -329,7 +312,7 @@ Start the API from `nullbin/deploy`:
 sudo ./nullbin start
 ```
 
-The script sees `.env.api` and starts the separate-API layout.
+It finds `.env.api` and starts the separate-API layout.
 
 **Checkpoint:** open `https://api.example.com/api/v1/version`. You should
 get JSON containing `"mode":"api"` and the version you installed. The API's home page returning **404
@@ -717,7 +700,7 @@ and [link encoding](web/src/link.ts).
 | The install's version line prints only `Installing`, or `nullbin update` cannot look up the latest release | The server could not reach GitHub, or no release has been published yet. Check the [Releases page](https://github.com/jacobzymet/nullbin-go/releases), then run the commands again. Do not continue without a version. |
 | `nullbin update` says files that came with Nullbin were edited | A file such as a Caddyfile was changed by hand, and updating would overwrite it. It lists the files; `git -C ~/nullbin stash` sets the edits aside so the update can continue. `.env` and `.env.api` are never affected. |
 | `nullbin` says to run it with sudo | It needs administrator rights for Docker: run `sudo ./nullbin ...` from the `deploy` folder. |
-| The server is running out of disk space | Free space used by old builds with `sudo docker image prune -f && sudo docker builder prune -f`. This never deletes pastes. |
+| The server is running out of disk space | Free space used by old builds with `sudo ./nullbin cleanup`. This never deletes pastes. |
 
 ## More deployment options
 
