@@ -15,8 +15,17 @@ if (fragment) {
   history.replaceState(null, '', window.location.pathname + window.location.search);
 }
 // A new link pasted into this tab that differs only in its fragment does
-// not load a new page; reload so it is handled from scratch.
-window.addEventListener('hashchange', () => window.location.reload());
+// not load a new page; reload so it is handled from scratch. The "Skip to
+// content" link changes the fragment too, but must never reload: that would
+// throw away a delete link shown only once, or an opened paste.
+window.addEventListener('hashchange', () => {
+  if (window.location.hash === '#main') {
+    history.replaceState(null, '', window.location.pathname + window.location.search);
+    el('main').focus();
+    return;
+  }
+  window.location.reload();
+});
 
 initWordmark();
 initTheme();

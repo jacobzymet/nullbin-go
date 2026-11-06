@@ -320,7 +320,7 @@ func (s *Store) CreatePendingWithReadLimit(expiresIn time.Duration, burn bool, t
 		return Created{}, ErrConflict
 	}
 	defer s.unlock(c.ID)
-	need, err := allocationSize(totalSize, commentToken != "")
+	need, err := allocationSize(totalSize)
 	if err != nil {
 		return Created{}, err
 	}
@@ -401,7 +401,7 @@ func (s *Store) AppendChunk(id string, n int, uploadToken string, body io.Reader
 	}
 	keep := charged // what stays charged afterwards; shrinking never fails
 	defer func() { s.resize(dir, keep) }()
-	f, err := s.root.OpenFile(path.Join(dir, fileBlob), os.O_WRONLY, 0)
+	f, err := s.openRegular(path.Join(dir, fileBlob), os.O_WRONLY)
 	if err != nil {
 		return err
 	}
@@ -456,9 +456,9 @@ func (s *Store) Finalize(id, uploadToken string) (Meta, error) {
 	if u.Received != u.TotalSize {
 		return Meta{}, ErrIncomplete
 	}
-	// Publishing charges the paste's whole allocation, including space for
-	// a discussion. If the budget is full the upload stays unfinished.
-	full, err := allocationSize(u.Received, u.CommentTokenHash != "")
+	// The allocation is now exactly the published paste's. Comments are
+	// charged one by one as they are posted (AddComment).
+	full, err := allocationSize(u.Received)
 	if err != nil {
 		return Meta{}, err
 	}
@@ -467,7 +467,7 @@ func (s *Store) Finalize(id, uploadToken string) (Meta, error) {
 	}
 
 	// Make sure the blob is exactly the received bytes and on disk.
-	f, err := s.root.OpenFile(path.Join(dir, fileBlob), os.O_WRONLY, 0)
+	f, err := s.openRegular(path.Join(dir, fileBlob), os.O_WRONLY)
 	if err != nil {
 		return Meta{}, err
 	}
@@ -585,7 +585,7 @@ func (s *Store) openUnclaimed(dir string, m Meta) (*Paste, error) {
 	if a == nil {
 		return nil, ErrNotFound
 	}
-	f, err := s.root.Open(path.Join(dir, fileBlob))
+	f, err := s.openRegular(path.Join(dir, fileBlob), os.O_RDONLY)
 	if err != nil {
 		return nil, notFoundIfMissing(err)
 	}
@@ -645,7 +645,7 @@ func (s *Store) get(id, token string, consume bool) (*Paste, error) {
 		done()
 		return nil, ErrNotFound
 	}
-	f, err := s.root.Open(path.Join(dirClaimed, claim, fileBlob))
+	f, err := s.openRegular(path.Join(dirClaimed, claim, fileBlob), os.O_RDONLY)
 	if err != nil {
 		done()
 		return nil, notFoundIfMissing(err)
@@ -779,12 +779,23 @@ func (s *Store) AddComment(id, commentToken string, ciphertext []byte) (int, err
 	if err := s.root.Mkdir(cdir, dirPerm); err != nil && !errors.Is(err, fs.ErrExist) {
 		return 0, err
 	}
+	// Only a real directory, never a link to another paste's comments.
+	if fi, err := s.root.Lstat(cdir); err != nil || !fi.IsDir() {
+		return 0, ErrCorrupt
+	}
 	n := len(s.commentNames(cdir))
 	if n >= MaxComments {
 		return 0, ErrDiscussionFull
 	}
+	// Comments are charged as they arrive, so a discussion that nobody
+	// uses costs nothing.
+	charge := commentCharge(len(ciphertext))
+	if err := s.grow(dir, charge); err != nil {
+		return 0, err
+	}
 	name := fmt.Sprintf("%06d", n+1)
 	if err := s.writeFile(cdir, name, ciphertext); err != nil {
+		s.grow(dir, -charge)
 		return 0, err
 	}
 	return n + 1, nil
@@ -816,7 +827,7 @@ func (s *Store) Comments(id, commentToken string) (iter.Seq2[[]byte, error], err
 }
 
 func (s *Store) readComment(name string) ([]byte, error) {
-	f, err := s.root.Open(name)
+	f, err := s.openRegular(name, os.O_RDONLY)
 	if err != nil {
 		return nil, notFoundIfMissing(err)
 	}
@@ -877,10 +888,11 @@ func validCommentName(name string) bool {
 
 // SweepStats counts what one sweep removed. It never contains identifiers.
 type SweepStats struct {
-	Expired      int // expired or unreadable published pastes
-	StalePending int // uploads older than PendingTTL
+	Expired      int // expired or used-up published pastes
+	Unreadable   int // published pastes whose metadata is missing or invalid
+	StalePending int // uploads older than PendingTTL or idle too long
 	Claimed      int // leftover claimed/ directories
-	Errors       int
+	Errors       int // entries kept because they could not be checked right now
 }
 
 // Sweep deletes expired pastes, stale pending uploads and leftover
@@ -896,20 +908,37 @@ func (s *Store) Sweep() SweepStats {
 		}
 		dir := path.Join(dirPastes, name)
 		m, err := s.readMeta(dir, name)
-		if errors.Is(err, ErrNotFound) {
-			if _, lerr := s.root.Lstat(dir); errors.Is(lerr, fs.ErrNotExist) {
-				continue // removed concurrently
+		unreadable := false
+		switch {
+		case err == nil:
+			if now.Before(m.ExpiresAt) && !exhausted(m) {
+				continue
 			}
-		}
-		if err == nil && now.Before(m.ExpiresAt) && !exhausted(m) {
+		case errors.Is(err, ErrCorrupt):
+			unreadable = true // invalid metadata never becomes valid
+		case errors.Is(err, ErrNotFound):
+			// Removed concurrently, or a paste without metadata, which can
+			// never be served.
+			if _, lerr := s.root.Lstat(dir); errors.Is(lerr, fs.ErrNotExist) {
+				continue
+			} else if lerr != nil {
+				st.Errors++
+				continue
+			}
+			unreadable = true
+		default:
+			// A temporary failure, such as running out of file handles or
+			// an I/O error, says nothing about the paste. Never delete on
+			// one; the next sweep checks again.
+			st.Errors++
 			continue
 		}
-		// Expired, or metadata unreadable: remove rather than keep data
-		// that can never be served.
-		if s.discard(dir, name) {
-			st.Expired++
-		} else {
+		if !s.discard(dir, name) {
 			st.Errors++
+		} else if unreadable {
+			st.Unreadable++
+		} else {
+			st.Expired++
 		}
 	}
 
@@ -919,7 +948,9 @@ func (s *Store) Sweep() SweepStats {
 		}
 		dir := path.Join(dirPending, name)
 		created, active, ok := s.pendingTimes(dir)
-		if !ok || now.Sub(created) > PendingTTL || now.Sub(active) > PendingIdle {
+		if !ok {
+			st.Errors++ // could not be checked right now; try again next sweep
+		} else if now.Sub(created) > PendingTTL || now.Sub(active) > PendingIdle {
 			if err := s.removeAllocated(dir); err != nil {
 				st.Errors++
 			} else {
@@ -1055,7 +1086,7 @@ func (s *Store) readMeta(dir, id string) (Meta, error) {
 	if m.Burn && m.ReadLimit == 0 && m.ReadsUsed == 0 {
 		m.ReadLimit = 1 // existing burn pastes still allow exactly one open
 	}
-	if !validReadLimit(m.Burn, m.ReadLimit) || m.ReadsUsed < 0 || m.ReadsUsed > m.ReadLimit {
+	if !validReadLimit(m.Burn, m.ReadLimit) || m.ReadsUsed < 0 || m.ReadsUsed > m.ReadLimit || (m.Burn && m.CommentTokenHash != "") {
 		return Meta{}, ErrCorrupt
 	}
 	return m, nil
@@ -1074,8 +1105,12 @@ func (u upload) lastActive() time.Time {
 // file is unreadable.
 func (s *Store) pendingTimes(dir string) (created, active time.Time, ok bool) {
 	var u upload
-	if err := s.readJSON(path.Join(dir, fileUpload), &u); err == nil {
+	err := s.readJSON(path.Join(dir, fileUpload), &u)
+	if err == nil {
 		return u.CreatedAt, u.lastActive(), true
+	}
+	if !errors.Is(err, ErrCorrupt) && !errors.Is(err, ErrNotFound) {
+		return time.Time{}, time.Time{}, false // temporary; check again later
 	}
 	fi, err := s.root.Lstat(dir)
 	if err != nil {
@@ -1111,7 +1146,7 @@ func (s *Store) list(dir string, st *SweepStats) []string {
 }
 
 func (s *Store) readJSON(name string, v any) error {
-	f, err := s.root.Open(name)
+	f, err := s.openRegular(name, os.O_RDONLY)
 	if err != nil {
 		return notFoundIfMissing(err)
 	}
@@ -1211,4 +1246,19 @@ func validClaimName(name string) bool {
 		}
 	}
 	return true
+}
+
+// openRegular opens name only if it is a regular file. Requests never
+// create links or special files, but if one appeared in the data directory
+// (planted by someone with access to it), a link inside it could lead to
+// another paste's files and a named pipe would block the request forever.
+func (s *Store) openRegular(name string, flag int) (*os.File, error) {
+	fi, err := s.root.Lstat(name)
+	if err != nil {
+		return nil, err
+	}
+	if !fi.Mode().IsRegular() {
+		return nil, ErrCorrupt
+	}
+	return s.root.OpenFile(name, flag, 0)
 }

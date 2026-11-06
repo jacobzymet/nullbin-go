@@ -270,7 +270,7 @@ Option A and Option B.
 | Task | Command |
 |---|---|
 | Update to the latest release | `sudo ./nullbin update` |
-| Show the version and container status | `sudo ./nullbin status` |
+| Show the running version and container status | `sudo ./nullbin status` |
 | Read recent logs | `sudo ./nullbin logs` |
 | Stop | `sudo ./nullbin stop` |
 | Start | `sudo ./nullbin start` |
@@ -298,7 +298,8 @@ None of these delete pastes, except `delete` for the one paste you name.
 
    It shows the installed and the new version, switches to the new release,
    rebuilds, and waits until Nullbin is running. Your settings and pastes
-   are kept; the site is down for a few seconds.
+   are kept; the site is down for a few seconds. If the new version does
+   not start, it goes back to the one you had and says so.
 3. Open your site and create a test paste.
 
 **Option B:** after updating the server, build the website from the same
@@ -565,9 +566,11 @@ the server must be stopped).
 | Create a paste | 20 per minute | 20 |
 | Upload chunks and finalize | 10 per second | 50 |
 | Post comments | 20 per minute | 10 |
+| Delete a paste | 60 per minute | 20 |
 | Downloads, burn reads and comment reads (shared) | 20 per minute | 20 |
-| Pages and assets (local all-in-one mode) | 5 per second | 100 |
+| Pages, assets and the version link | 5 per second | 100 |
 
+One IPv6 `/48` as a whole gets four times a client's rates and bursts.
 Each limiter tracks up to 100,000 clients and refuses new ones when full.
 Forwarded addresses are trusted only from `NULLBIN_TRUSTED_PROXIES`.
 
@@ -578,19 +581,20 @@ Forwarded addresses are trusted only from `NULLBIN_TRUSTED_PROXIES`.
 | Unfinished upload lifetime | 2 minutes without a completed chunk; 1 hour at most |
 | Unfinished uploads | `MAX_PENDING` in total; 8 per client and 32 per IPv6 `/48` |
 | Upload chunk size | 4 MiB to 8 MiB, except the last chunk |
-| Concurrent chunk uploads | 128 in total; 4 per client and 16 per IPv6 `/48` |
-| Minimum upload rate | 16 KiB/s on average after 15 seconds |
-| Concurrent downloads | 512 in total; 16 per client and 64 per IPv6 `/48` |
+| Concurrent chunk uploads | 512 in total; 4 per client and 16 per IPv6 `/48` |
+| Minimum upload rate | 16 KiB/s on average after 5 seconds |
+| Concurrent downloads | 512 in total; 16 per client and 32 per IPv6 `/48` |
 | Minimum download rate | 32 KiB/s on average after 2 minutes (for password and save dialogs). Time the server spends on its own bandwidth limits does not count. |
 | Download bandwidth | 4 MiB/s per client, 16 MiB/s in total |
 | Request size | 1 KiB to create a paste; 16 KiB of headers |
+| Disk writes at once | 64 creates, finalizes, deletes and comments; others wait up to 10 s |
 | Timeouts | 10 s for headers, 60 s idle, 30 s for other requests, 5 minutes per upload chunk |
 
 An upload is charged 32 KiB when it starts and its bytes as they arrive,
 so uploads that send nothing cannot fill the budget. It starts only if the
 whole paste fits at that moment, but other uploads can take the space
-before it finishes. Publishing charges the rest, including room for 200
-comments when the paste has a discussion. A full budget returns `507`; too
+before it finishes. Each comment is charged when it is posted, so an
+unused discussion costs nothing. A full budget returns `507`; too
 many uploads or transfers return `503` with `Retry-After`. This is
 Nullbin's own budget, not a disk quota: leave free disk space, or use a
 dedicated volume.
@@ -663,7 +667,7 @@ separately hosted website lists its version and hashes at `/version.json`.
 
 **Links** always use the website's address: `https://host/p/<id>#<key>`
 (with `.b` after the key for burn after reading), and
-`https://host/d/<id>#<delete token>`.
+`https://host/d/<id>#d.<delete token>`.
 
 **Separate website (Option B):** the API's `NULLBIN_FRONTEND_ORIGIN` and the
 website's build-time `NULLBIN_API_ORIGIN` name each other. CORS allows only

@@ -55,39 +55,41 @@ func TestQuotaChargesUploadsOnlyForBytesReceived(t *testing.T) {
 	}
 }
 
-// Publishing charges the discussion space. If it does not fit, the upload
-// stays unfinished and can be published once space frees up.
-func TestQuotaFinalizeNeedsRoomForTheWholePaste(t *testing.T) {
-	full, _ := allocationSize(1000, true)
-	s, err := OpenWithLimits(t.TempDir(), Limits{MaxBytes: full + entryOverhead + 1000 - 1, MaxPending: 10})
+// Anyone can create a paste with a discussion, so a discussion must cost
+// nothing until comments arrive. Charging room for 200 comments up front let
+// tiny pastes reserve 7 MiB each and fill the budget with a few kilobytes.
+func TestQuotaDiscussionCostsNothingUntilCommentsArrive(t *testing.T) {
+	const size = 67
+	each, _ := allocationSize(size)
+	s, err := OpenWithLimits(t.TempDir(), Limits{MaxBytes: 4 * each, MaxPending: 10})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	a, err := s.CreatePending(time.Hour, false, 1000, NewToken())
-	if err != nil {
-		t.Fatal(err)
-	}
-	b, err := s.CreatePending(time.Hour, false, 1000, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, c := range []Created{a, b} {
-		if err := s.AppendChunk(c.ID, 0, c.UploadToken, bytes.NewReader(make([]byte, 1000))); err != nil {
+	token := NewToken()
+	var last Created
+	for i := range 4 {
+		c, err := s.CreatePending(30*24*time.Hour, false, size, token)
+		if err != nil {
+			t.Fatalf("paste %d: %v", i, err)
+		}
+		if err := s.AppendChunk(c.ID, 0, c.UploadToken, bytes.NewReader(make([]byte, size))); err != nil {
 			t.Fatal(err)
 		}
+		if _, err := s.Finalize(c.ID, c.UploadToken); err != nil {
+			t.Fatalf("publish %d: %v", i, err)
+		}
+		last = c
 	}
-	if _, err := s.Finalize(a.ID, a.UploadToken); !errors.Is(err, ErrQuota) {
-		t.Fatalf("finalize without room for the discussion: %v", err)
+	if s.used != 4*each {
+		t.Fatalf("charged %d, want %d", s.used, 4*each)
 	}
-	if err := s.Remove(b.ID); err != nil {
-		t.Fatal(err)
+	// With the budget full, a comment is refused and nothing is written.
+	if _, err := s.AddComment(last.ID, token, make([]byte, 100)); !errors.Is(err, ErrQuota) {
+		t.Fatalf("comment beyond the budget: %v", err)
 	}
-	if _, err := s.Finalize(a.ID, a.UploadToken); err != nil {
-		t.Fatal(err)
-	}
-	if s.used != full || s.pending != 0 {
-		t.Fatalf("charged %d with %d pending, want %d and 0", s.used, s.pending, full)
+	if s.used != 4*each {
+		t.Fatalf("a refused comment changed the charge to %d", s.used)
 	}
 }
 
@@ -136,7 +138,7 @@ func TestQuotaKeepsDeletedOpenFilesCharged(t *testing.T) {
 		// this tests the Unix behavior. Linux is the production platform.
 		t.Skip("deleting files that are open is Unix behavior")
 	}
-	charge, _ := allocationSize(1000, false)
+	charge, _ := allocationSize(1000)
 	s, err := OpenWithLimits(t.TempDir(), Limits{MaxBytes: charge, MaxPending: 1})
 	if err != nil {
 		t.Fatal(err)
@@ -166,9 +168,10 @@ func TestQuotaKeepsDeletedOpenFilesCharged(t *testing.T) {
 	}
 }
 
-func TestQuotaIncludesDiscussionsAndPublishedPastesAfterRestart(t *testing.T) {
+func TestQuotaChargesCommentsAndSurvivesRestart(t *testing.T) {
 	dir := t.TempDir()
-	charge, _ := allocationSize(1000, true)
+	paste, _ := allocationSize(1000)
+	charge := paste + commentCharge(MaxCommentBytes)
 	limits := Limits{MaxBytes: charge, MaxPending: 1}
 	s, err := OpenWithLimits(dir, limits)
 	if err != nil {
@@ -185,11 +188,17 @@ func TestQuotaIncludesDiscussionsAndPublishedPastesAfterRestart(t *testing.T) {
 	if _, err := s.Finalize(c.ID, c.UploadToken); err != nil {
 		t.Fatal(err)
 	}
-	if s.used != charge {
-		t.Fatal("discussion space was not reserved")
+	if s.used != paste {
+		t.Fatalf("published paste charged %d, want %d", s.used, paste)
 	}
 	if _, err := s.AddComment(c.ID, token, make([]byte, MaxCommentBytes)); err != nil {
 		t.Fatal(err)
+	}
+	if s.used != charge {
+		t.Fatalf("comment charged %d, want %d", s.used-paste, charge-paste)
+	}
+	if _, err := s.AddComment(c.ID, token, make([]byte, 1)); !errors.Is(err, ErrQuota) {
+		t.Fatalf("comment beyond the budget: %v", err)
 	}
 	s.Close()
 	s, err = OpenWithLimits(dir, limits)

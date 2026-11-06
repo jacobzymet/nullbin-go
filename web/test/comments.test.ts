@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { loadSodium } from '../src/sodium.ts';
-import { buildThread, cleanName, decryptComment, encryptComment, MAX_COMMENT_BYTES, MAX_COMMENT_LENGTH, type Comment } from '../src/comments.ts';
+import { buildThread, uniqueComments, cleanName, decryptComment, encryptComment, MAX_COMMENT_BYTES, MAX_COMMENT_LENGTH, type Comment } from '../src/comments.ts';
 import { PasteError } from '../src/format.ts';
 
 const sodium = await loadSodium();
@@ -88,10 +88,21 @@ test('threads: replies nest, duplicates and loops are neutralized', () => {
   const b = c('b', 'a');
   const d = c('d', 'b');
   const orphan = c('e', 'f'); // parent unknown
-  const early = c('g', 'h'); // parent arrives later: treated as top level
+  const early = c('g', 'h'); // the server put the reply before its parent
   const h = c('h', null);
-  const roots = buildThread([a, b, d, a, orphan, early, h]);
-  assert.deepEqual(roots.map((r) => r.comment.text), ['a', 'e', 'g', 'h']);
+  const x = c('x', 'y'); // a loop: each claims the other as parent
+  const y = c('y', 'x');
+  const roots = buildThread([a, b, d, a, orphan, early, h, x, y]);
+  assert.deepEqual(roots.map((r) => r.comment.text), ['a', 'e', 'h', 'x', 'y']);
+  assert.equal(roots[0]!.replies.length, 1, 'a replayed comment shows once');
   assert.equal(roots[0]!.replies[0]!.comment.text, 'b');
   assert.equal(roots[0]!.replies[0]!.replies[0]!.comment.text, 'd');
+  assert.equal(roots[2]!.replies[0]!.comment.text, 'g', 'a reply sits under its parent whatever the order');
+  assert.deepEqual(uniqueComments([a, b, a, b]).map((m) => m.text), ['a', 'b']);
+});
+
+test('names lose every invisible character that could disguise them', () => {
+  for (const cp of [0x2060, 0xfeff, 0xe0041, 0x202e, 0x200b]) {
+    assert.equal(cleanName(`Al${String.fromCodePoint(cp)}ice`), 'Alice', `U+${cp.toString(16)} must be removed`);
+  }
 });

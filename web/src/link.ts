@@ -1,7 +1,11 @@
 // URL fragments. The fragment is never sent to the server by browsers.
 //
 //   view link:   /p/<id>#<key>      or /p/<id>#<key>.b  (.b = burn after reading)
-//   delete link: /d/<id>#<delete token>
+//   delete link: /d/<id>#d.<delete token>
+//
+// Keys and delete tokens are both 43 random base64url characters. The "d."
+// marks a delete token, so a view link edited to /d/ can never send its key
+// to the server as a delete token.
 
 import type { Sodium } from './sodium.ts';
 import { KEY_BYTES } from './format.ts';
@@ -37,8 +41,16 @@ export function parseKeyFragment(sodium: Sodium, fragment: string): KeyFragment 
   return { key, burn: parts.length === 2 };
 }
 
-/** Parses "#<delete token>". The token is opaque: 43 base64url characters. */
+/** The fragment of a delete link, without the "#". */
+export function encodeTokenFragment(token: string): string {
+  if (!B64URL_32_BYTES.test(token)) throw new Error('bad delete token');
+  return `d.${token}`;
+}
+
+/** Parses "#d.<delete token>". The token is opaque: 43 base64url characters. */
 export function parseTokenFragment(fragment: string): string | null {
   const f = fragment.startsWith('#') ? fragment.slice(1) : fragment;
-  return B64URL_32_BYTES.test(f) ? f : null;
+  if (!f.startsWith('d.')) return null;
+  const token = f.slice(2);
+  return B64URL_32_BYTES.test(token) ? token : null;
 }

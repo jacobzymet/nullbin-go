@@ -523,3 +523,47 @@ func TestPendingTrackerCountsSitesExactly(t *testing.T) {
 		t.Fatalf("left over: %d clients, %d sites, %d site links", len(p.clients), len(p.sites), len(p.siteOf))
 	}
 }
+
+// Per-/64 limits alone let one /48 create 20 pastes from each of 65,536
+// networks at once.
+func TestOneIPv6SiteIsRateLimitedAsAWhole(t *testing.T) {
+	e := newEnv(t, func(c *Config) {
+		c.TrustedProxies = []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8")}
+	})
+	create := func(xff string) int {
+		resp, _ := e.do(t, "POST", "/api/v1/pastes", []byte(`{"expires_in":300,"burn_after_reading":false,"total_size":100}`),
+			map[string]string{"Content-Type": "application/json", "X-Forwarded-For": xff})
+		return resp.StatusCode
+	}
+	limited := 0
+	for i := range 200 {
+		if code := create(fmt.Sprintf("2001:db8:7:%x::1", i)); code == http.StatusTooManyRequests {
+			limited++
+		}
+	}
+	// The /48 gets 4 clients' burst (80); its unfinished-upload cap (32)
+	// refuses most of the rest first, so count both kinds of refusal.
+	if limited == 0 {
+		t.Fatal("no create from 200 networks in one /48 was rate limited")
+	}
+	if code := create("2001:db8:8::1"); code != http.StatusCreated {
+		t.Fatalf("another /48 was refused: %d", code)
+	}
+}
+
+// Deletes read metadata from disk, so they must be rate limited too.
+func TestDeletesAreRateLimited(t *testing.T) {
+	e := newEnv(t, nil)
+	id := strings.Repeat("ab", 16)
+	limited := false
+	for range 40 {
+		resp, _ := e.do(t, "DELETE", "/api/v1/pastes/"+id, nil, map[string]string{DeleteTokenHeader: strings.Repeat("A", 43)})
+		if resp.StatusCode == http.StatusTooManyRequests {
+			limited = true
+			break
+		}
+	}
+	if !limited {
+		t.Fatal("40 deletes in a row were never rate limited")
+	}
+}

@@ -628,7 +628,7 @@ func TestSweepLeftoversAndUnknownEntries(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "pastes", corrupt, "meta.json"), []byte("{not json"), 0o600)
 
 	st := s.Sweep()
-	if st.Claimed != 1 || st.Expired != 2 || st.Errors != 0 {
+	if st.Claimed != 1 || st.Unreadable != 2 || st.Expired != 0 || st.Errors != 0 {
 		t.Fatalf("sweep stats %+v", st)
 	}
 	if got := entries(t, filepath.Join(dir, "claimed")); strings.Join(got, ",") != "not-a-claim" {
@@ -1140,5 +1140,50 @@ func TestRemoveByOperator(t *testing.T) {
 	}
 	if s.used != 0 || s.pending != 0 {
 		t.Fatalf("storage still charged: %d bytes, %d pending", s.used, s.pending)
+	}
+}
+
+// A sweep must never delete a live paste because its metadata could not be
+// read at that moment (out of file handles, an I/O error, a permission
+// problem). It used to treat every read error as "unreadable forever".
+func TestSweepKeepsPastesItCannotReadRightNow(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("file permissions work differently on Windows")
+	}
+	s, _, dir := newTestStore(t)
+	c := publish(t, s, testContent, false, time.Hour, 1000)
+	meta := filepath.Join(dir, "pastes", c.ID, "meta.json")
+	if err := os.Chmod(meta, 0); err != nil {
+		t.Fatal(err)
+	}
+	if f, err := os.Open(meta); err == nil {
+		f.Close()
+		t.Skip("running as root: permissions do not stop reads")
+	}
+	st := s.Sweep()
+	if st.Expired != 0 || st.Unreadable != 0 || st.Errors != 1 {
+		t.Fatalf("sweep stats %+v", st)
+	}
+	if err := os.Chmod(meta, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	p, err := s.Get(c.ID)
+	if err != nil {
+		t.Fatalf("paste lost after a failed read: %v", err)
+	}
+	p.Close()
+}
+
+// Requests never create links, but one planted in the data directory must
+// not let a paste's comments land in another paste's discussion.
+func TestCommentsRefuseALinkedDirectory(t *testing.T) {
+	s, _, dir := newTestStore(t)
+	victim, _ := publishDiscussion(t, s)
+	attacker, token := publishDiscussion(t, s)
+	if err := os.Symlink(filepath.Join(dir, "pastes", victim.ID, "comments"), filepath.Join(dir, "pastes", attacker.ID, "comments")); err != nil {
+		t.Skipf("cannot create links here: %v", err)
+	}
+	if _, err := s.AddComment(attacker.ID, token, make([]byte, 100)); !errors.Is(err, ErrCorrupt) {
+		t.Fatalf("comment through a link: %v", err)
 	}
 }

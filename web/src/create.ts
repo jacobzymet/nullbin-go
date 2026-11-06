@@ -23,7 +23,7 @@ import {
   timeUntil,
 } from './dom.ts';
 import { PasteError } from './format.ts';
-import { encodeKeyFragment } from './link.ts';
+import { encodeKeyFragment, encodeTokenFragment } from './link.ts';
 import { loadSodium } from './sodium.ts';
 import { initShareActions } from './share.ts';
 
@@ -276,7 +276,7 @@ async function createAndUpload(progress: Progress, o: CreateOptions): Promise<st
   el('share-server').textContent = server;
   el('share-key').textContent = key;
   const deleteLink = el<HTMLInputElement>('delete-link');
-  deleteLink.value = `${window.location.origin}/d/${created.id}#${created.deleteToken}`;
+  deleteLink.value = `${window.location.origin}/d/${created.id}#${encodeTokenFragment(created.deleteToken)}`;
 
   const exp = el('result-expires');
   exp.textContent = expires

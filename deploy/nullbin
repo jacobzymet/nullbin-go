@@ -66,13 +66,15 @@ main() {
       die "both deploy/.env and deploy/.env.api exist; remove the one you do not use"
     elif [[ -f $deploy/.env ]]; then
       config=.env
-      compose=(env "NULLBIN_IPV6=$ipv6" docker compose -f "$deploy/compose.yaml")
+      compose=(docker compose -f "$deploy/compose.yaml")
     elif [[ -f $deploy/.env.api ]]; then
       config=.env.api
-      compose=(env "NULLBIN_IPV6=$ipv6" docker compose --env-file "$deploy/.env.api" -f "$deploy/compose.api.yaml")
+      compose=(docker compose --env-file "$deploy/.env.api" -f "$deploy/compose.api.yaml")
     else
       die "not configured yet: run sudo ./nullbin setup paste.example.com (or setup-api for the separate-API layout)"
     fi
+    # Settings come only from the checked file, never from this shell.
+    compose=(env -u DOMAIN -u API_DOMAIN -u FRONTEND_ORIGIN "NULLBIN_IPV6=$ipv6" "${compose[@]}")
   }
 
   # A lowercase domain name with at least one dot, or localhost for testing.
@@ -80,6 +82,40 @@ main() {
     local d=$1
     [[ $d == localhost ]] && return 0
     [[ ${#d} -le 253 && $d =~ ^([a-z0-9]([a-z0-9-]*[a-z0-9])?[.])+[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]]
+  }
+
+  # An exact https:// website address: a domain name and an optional port
+  # other than 443, with no path, query or trailing slash.
+  valid_origin() {
+    local host=${1#https://} port
+    [[ $1 == https://* ]] || return 1
+    if [[ $host == *:* ]]; then
+      port=${host##*:}
+      host=${host%:*}
+      [[ $port =~ ^[1-9][0-9]{0,4}$ && $port -le 65535 && $port -ne 443 ]] || return 1
+    fi
+    valid_domain "$host"
+  }
+
+  # Prints a setting's value from the configuration file. It must be set
+  # exactly once, as NAME=value on a line of its own.
+  setting() {
+    local name=$1 lines
+    lines=$(as_owner grep -E -- "^[[:space:]]*(export[[:space:]]+)?${name}[[:space:]]*=" "$deploy/$config" || true)
+    [[ -n $lines && $lines != *$'\n'* && $lines == "$name="* ]] ||
+      die "deploy/$config must set $name exactly once, as $name=value at the start of a line"
+    printf '%s' "${lines#*=}"
+  }
+
+  # The domain names end up in the proxy's configuration, so a value edited
+  # by hand is checked as strictly as setup checks it.
+  check_config() {
+    if [[ $config == .env ]]; then
+      valid_domain "$(setting DOMAIN)" || die "DOMAIN in deploy/.env is not a lowercase domain name such as paste.example.com"
+    else
+      valid_domain "$(setting API_DOMAIN)" || die "API_DOMAIN in deploy/.env.api is not a lowercase domain name such as api.example.com"
+      valid_origin "$(setting FRONTEND_ORIGIN)" || die "FRONTEND_ORIGIN in deploy/.env.api is not an address such as https://paste.example.com"
+    fi
   }
 
   # Copies standard input to standard output, replacing whole lines that
@@ -121,8 +157,18 @@ main() {
 
   installed() { g describe --tags --always 2>/dev/null || echo unknown; }
 
+  # The version the running API was built from, from its image label.
+  running() {
+    local id v
+    id=$("${compose[@]}" ps -q nullbin 2>/dev/null || true)
+    [[ -n $id ]] || { echo "not running"; return; }
+    v=$(docker inspect -f '{{index .Config.Labels "org.opencontainers.image.version"}}' "$id" 2>/dev/null || true)
+    [[ -n $v && $v != "<no value>" ]] && echo "$v" || echo "unknown (started before v0.2.6)"
+  }
+
   start() {
     local version
+    check_config
     version=$(installed)
     # Configurations from before v0.2.5 hold the old default of 64, which a
     # few client networks could fill with empty uploads.
@@ -157,22 +203,13 @@ main() {
       echo "Next: point $domain at this server, then run: sudo ./nullbin start"
       ;;
     setup-api)
-      local api=${1:-} origin=${2:-} host port
+      local api=${1:-} origin=${2:-}
       api=${api,,}
       origin=${origin,,}
       valid_domain "$api" ||
         die "usage: sudo ./nullbin setup-api api.example.com https://paste.example.com (the API's domain name, then the website's exact address)"
-      [[ $origin == https://* ]] || die "the website address must start with https://, such as https://paste.example.com"
-      host=${origin#https://}
-      port=
-      if [[ $host == *:* ]]; then
-        port=${host##*:}
-        host=${host%:*}
-        [[ $port =~ ^[1-9][0-9]{0,4}$ && $port -le 65535 && $port -ne 443 ]] ||
-          die "invalid port in $origin (leave out :443)"
-      fi
-      valid_domain "$host" ||
-        die "the website address must be https:// and a domain name, with no path or trailing slash, such as https://paste.example.com"
+      valid_origin "$origin" ||
+        die "the website address must be https:// and a domain name, with no path or trailing slash and no :443, such as https://paste.example.com"
       write_config env.api.example .env.api "API_DOMAIN=$api" "FRONTEND_ORIGIN=$origin"
       echo "Next: point $api at this server, then run: sudo ./nullbin start"
       ;;
@@ -197,19 +234,31 @@ main() {
       # changed on GitHub after release is never followed.
       g fetch --quiet --tags origin || echo "Could not fetch new releases (see the message above); using releases already downloaded."
       g rev-parse --quiet --verify "refs/tags/$target^{commit}" >/dev/null || die "release $target was not found"
-      changes=$(g status --porcelain --untracked-files=no)
-      [[ -z $changes ]] || die "files that came with Nullbin were edited, so the update would overwrite them:
+      # Edited files would be overwritten, and files added to the checkout
+      # would be built into Nullbin along with the release. Settings files
+      # are ignored by Git, so they do not count.
+      changes=$(g status --porcelain --untracked-files=all)
+      [[ -z $changes ]] || die "the checkout has edited or added files, which the update would overwrite or build in:
 $changes
-See them with: git -C $repo diff
-Set them aside with: git -C $repo stash"
+See them with: git -C $repo status
+Set them aside with: git -C $repo stash --include-untracked"
+      local previous
+      previous=$(g rev-parse HEAD)
       g -c advice.detachedHead=false checkout --quiet "$target"
       # Start with the release's own copy of this script, so changes to how
       # Nullbin starts take effect with the update that brings them.
-      exec "$deploy/nullbin" start
+      if "$deploy/nullbin" start; then
+        exit 0
+      fi
+      echo "nullbin: $target did not start; going back to $current." >&2
+      g -c advice.detachedHead=false checkout --quiet "$previous"
+      "$deploy/nullbin" start || die "$current did not start either. See what went wrong with: sudo ./nullbin logs"
+      die "the update to $target failed, and $current is running again. See what went wrong with: sudo ./nullbin logs"
       ;;
     status)
       layout
-      echo "Installed version: $(installed)"
+      echo "Running version:   $(running)"
+      echo "Checked-out code:  $(installed)"
       "${compose[@]}" ps
       ;;
     logs)

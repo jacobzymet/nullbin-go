@@ -28,7 +28,7 @@ const ContentSecurityPolicy = "default-src 'none'; " +
 	"base-uri 'none'; " +
 	"form-action 'none'; " +
 	"frame-ancestors 'none'; " +
-	// Trusted Types: the browser itself refuses HTML-injection sinks such as
+	// Trusted Types: browsers that enforce it refuse HTML-injection sinks such as
 	// innerHTML, so a future DOM XSS bug fails closed. No policies exist.
 	"require-trusted-types-for 'script'; trusted-types 'none'"
 

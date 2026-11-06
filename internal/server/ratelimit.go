@@ -26,9 +26,14 @@ type limiter struct {
 	burst float64
 	max   int
 	key   [32]byte
+	// site, if set, also limits each IPv6 /48 as a whole. One /48 holds
+	// 65,536 /64s and is free from tunnel brokers, so per-/64 limits alone
+	// would barely slow one person down.
+	site *limiter
 
-	mu      sync.Mutex
-	buckets map[[16]byte]*bucket
+	mu       sync.Mutex
+	buckets  map[[16]byte]*bucket
+	lastFull time.Time // when a full table was last scanned for free entries
 }
 
 type bucket struct {
@@ -47,6 +52,17 @@ func newLimiter(perSecond float64, burst, maxEntries int) *limiter {
 	return l
 }
 
+// siteShare is how many clients' worth of requests one IPv6 /48 may make.
+const siteShare = 4
+
+// newClientLimiter limits each client network, and each IPv6 /48 to
+// siteShare times that.
+func newClientLimiter(perSecond float64, burst int) *limiter {
+	l := newLimiter(perSecond, burst, limiterMaxEntries)
+	l.site = newLimiter(siteShare*perSecond, siteShare*burst, limiterMaxEntries)
+	return l
+}
+
 // allow takes one token for ip. If none is available it returns false and
 // how long until one will be.
 func (l *limiter) allow(ip netip.Addr, now time.Time) (bool, time.Duration) {
@@ -54,14 +70,29 @@ func (l *limiter) allow(ip netip.Addr, now time.Time) (bool, time.Duration) {
 }
 
 func (l *limiter) allowN(ip netip.Addr, now time.Time, cost float64) (bool, time.Duration) {
-	k := l.hash(ip)
+	if l.site != nil {
+		if k, isV6 := l.site.hashSite(ip); isV6 {
+			if ok, wait := l.site.take(k, now, cost); !ok {
+				return false, wait
+			}
+		}
+	}
+	return l.take(l.hash(ip), now, cost)
+}
+
+func (l *limiter) take(k [16]byte, now time.Time, cost float64) (bool, time.Duration) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
 	b, ok := l.buckets[k]
 	if !ok {
 		if len(l.buckets) >= l.max {
-			l.pruneLocked(now)
+			// Scanning a full table is slow, so do it at most once a second
+			// here; Server.Prune does it regularly anyway.
+			if now.Sub(l.lastFull) >= time.Second {
+				l.lastFull = now
+				l.pruneLocked(now)
+			}
 			if len(l.buckets) >= l.max {
 				return false, time.Minute
 			}
@@ -87,6 +118,9 @@ func (l *limiter) prune(now time.Time) {
 	l.mu.Lock()
 	l.pruneLocked(now)
 	l.mu.Unlock()
+	if l.site != nil {
+		l.site.prune(now)
+	}
 }
 
 func (l *limiter) pruneLocked(now time.Time) {

@@ -3,10 +3,11 @@
 // only the comment token derived from the link key and password.
 
 import { ApiError, fetchComments, postComment } from './api.ts';
-import { buildThread, decryptComment, encryptComment, type Comment, type ThreadNode } from './comments.ts';
+import { buildThread, decryptComment, encryptComment, uniqueComments, type Comment, type ThreadNode } from './comments.ts';
 import type { DiscussionKeys } from './crypto.ts';
 import { announce, busy, el, icon, relativeTime, reveal, show, toast } from './dom.ts';
 import { PasteError } from './format.ts';
+import { hasHiddenChars } from './hidden.ts';
 import { loadSodium } from './sodium.ts';
 
 
@@ -60,7 +61,8 @@ export function initDiscussion(pasteId: string, keys: DiscussionKeys): void {
         const c = decryptComment(sodium, keys.key, pasteId, b);
         if (c) ok.push(c);
       }
-      comments = ok;
+      // A server could replay a comment; each counts and shows once.
+      comments = uniqueComments(ok);
       const hidden = blobs.length - ok.length;
       const note = el('comments-hidden');
       note.textContent =
@@ -182,6 +184,14 @@ function renderNode(node: ThreadNode, onReply: (c: Comment) => void): HTMLLIElem
   const body = document.createElement('p');
   body.className = 'nb-comment-text';
   body.textContent = c.text; // never innerHTML
+  const parts: HTMLElement[] = [head, body];
+  if (hasHiddenChars(c.text)) {
+    // The same warning the paste viewer shows, for the same reason.
+    const warn = document.createElement('p');
+    warn.className = 'nb-meta nb-comment-warn';
+    warn.textContent = 'This comment contains hidden characters that can make it look different from what copying it gives you.';
+    parts.push(warn);
+  }
 
   const reply = document.createElement('button');
   reply.type = 'button';
@@ -190,7 +200,7 @@ function renderNode(node: ThreadNode, onReply: (c: Comment) => void): HTMLLIElem
   reply.setAttribute('aria-label', `Reply to ${displayName(c)}`);
   reply.addEventListener('click', () => onReply(c));
 
-  li.append(head, body, reply);
+  li.append(...parts, reply);
   if (node.replies.length > 0) {
     // Always nested in the markup; CSS stops indenting after a few levels.
     const ol = document.createElement('ol');

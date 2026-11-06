@@ -20,6 +20,9 @@ services:
       target: backend
       args:
         VERSION: ${VERSION:-self-built}
+      # Lets "./nullbin status" report the version that is actually running.
+      labels:
+        org.opencontainers.image.version: ${VERSION:-self-built}
     restart: unless-stopped
     read_only: true
     user: "65532:65532"

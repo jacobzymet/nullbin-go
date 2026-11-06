@@ -6,6 +6,7 @@ import { ApiError, fetchBurnPrefix, fetchPaste } from './api.ts';
 import { CloneableAttachment, MAX_BUFFERED_DOWNLOAD } from './attachments.ts';
 import { burnAccessToken, deriveKey, openPaste, type OpenedPaste } from './crypto.ts';
 import { initDiscussion } from './discussion.ts';
+import { hasHiddenChars } from './hidden.ts';
 import {
   Progress,
   announce,
@@ -35,18 +36,7 @@ interface SaveFilePickerWindow {
 export const MAX_PREVIEW_LINES = 5000;
 export const MAX_PREVIEW_CHARS = 100_000;
 
-// Characters that change how text looks without being visible: direction
-// overrides, embeddings, isolates and marks, the zero-width space, the word
-// joiner, a byte-order mark after the start, and Unicode tag characters.
-// They let a paste display differently from what copying it yields
-// ("Trojan Source", CVE-2021-42574). Zero-width joiners and non-joiners are
-// not flagged: emoji and Persian or Indic scripts use them legitimately.
-const HIDDEN_CHARS = /[\u061C\u200B\u200E\u200F\u202A-\u202E\u2060\u2066-\u2069]|(?<!^)\uFEFF|[\u{E0000}-\u{E007F}]/u;
-
-/** Reports whether text contains characters that can disguise what it says. */
-export function hasHiddenChars(text: string): boolean {
-  return HIDDEN_CHARS.test(text);
-}
+export { hasHiddenChars };
 
 /** Count without splitting millions of lines into a large temporary array. */
 export function textPreview(text: string): { text: string; lines: number; truncated: boolean } {
@@ -106,6 +96,8 @@ async function open(id: string, key: Uint8Array, burn: boolean, shareURL: string
         if (prefix.password) {
           asked = true;
           password = await askPassword(attempt);
+          // Nothing has been requested yet, so cancelling uses up no open.
+          if (password === null) throw new PasteError('cancelled', 'Cancelled.');
         }
         const master = prefix.password ? deriveKey(sodium, key, password!, prefix.salt) : key.slice();
         const token = burnAccessToken(sodium, master);
@@ -258,8 +250,8 @@ function renderFile(file: AsyncGenerator<Uint8Array>, filename: string | null, s
   };
 }
 
-/** Shows the password gate and resolves with what the reader enters. */
-function askPassword(attempt: number): Promise<string> {
+/** Shows the password gate and resolves with what the reader enters, or null if they cancel. */
+function askPassword(attempt: number): Promise<string | null> {
   const form = el<HTMLFormElement>('gate-password');
   const input = el<HTMLInputElement>('view-password');
   show(el('view-progress'), false);
@@ -278,6 +270,7 @@ function askPassword(attempt: number): Promise<string> {
   input.value = '';
   input.focus();
   return new Promise((resolve) => {
+    const listeners = new AbortController();
     const onSubmit = (ev: SubmitEvent) => {
       ev.preventDefault();
       const value = input.value;
@@ -285,7 +278,7 @@ function askPassword(attempt: number): Promise<string> {
         input.focus();
         return;
       }
-      form.removeEventListener('submit', onSubmit);
+      listeners.abort();
       input.value = '';
       show(form, false);
       el('view-stage').textContent = 'Unlocking';
@@ -293,7 +286,14 @@ function askPassword(attempt: number): Promise<string> {
       // Let the status paint before Argon2id blocks the page.
       setTimeout(() => resolve(value), 60);
     };
-    form.addEventListener('submit', onSubmit);
+    const onCancel = () => {
+      listeners.abort();
+      input.value = '';
+      show(form, false);
+      resolve(null);
+    };
+    form.addEventListener('submit', onSubmit, { signal: listeners.signal });
+    el('view-password-cancel').addEventListener('click', onCancel, { signal: listeners.signal });
   });
 }
 
@@ -365,6 +365,9 @@ function showFailure(e: unknown): void {
   }
   if (e instanceof PasteError) {
     switch (e.code) {
+      case 'cancelled':
+        showProblem('Not opened', 'You cancelled before the paste was unlocked. Open the link again to enter the password.');
+        return;
       case 'wrong-key':
         showProblem('This paste can’t be decrypted', 'The key in the link doesn’t match. Check that you copied the whole link, including everything after #.');
         return;

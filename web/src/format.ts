@@ -157,6 +157,9 @@ export function parseMeta(bytes: Uint8Array, final: boolean, hasPassword: boolea
   throw bad();
 }
 
+/** How long a download may go without receiving anything. */
+export const STALL_MS = 60_000;
+
 /**
  * Reads on demand, keeping at most one unread network chunk. Password and
  * save dialogs apply backpressure instead of buffering the attachment.
@@ -177,8 +180,18 @@ export class ByteReader {
 
   private async fill(): Promise<void> {
     while (this.chunk.length === 0 && !this.finished) {
+      // A server that stops sending must not leave the page waiting forever.
+      // Only time spent waiting for the network counts: while a password or
+      // save dialog is open, nothing is being read.
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const stalled = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          void this.reader.cancel().catch(() => {});
+          reject(new Error('stalled'));
+        }, STALL_MS);
+      });
       try {
-        const { done, value } = await this.reader.read();
+        const { done, value } = await Promise.race([this.reader.read(), stalled]);
         this.finished = done;
         if (!done) {
           this.chunk = value;
@@ -187,6 +200,8 @@ export class ByteReader {
         }
       } catch {
         throw new PasteError('network', 'The download failed.');
+      } finally {
+        clearTimeout(timer);
       }
     }
   }

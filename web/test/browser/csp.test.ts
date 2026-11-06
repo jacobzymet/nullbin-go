@@ -298,7 +298,8 @@ test('every page loads under the CSP with no external requests', async () => {
     [`${origin}/`, '#create', null],
     [`${origin}/p/${id}`, '#problem', /incomplete/],
     [`${origin}/d/${id}`, '#problem', /incomplete/],
-    [`${origin}/d/${id}#${'A'.repeat(43)}`, '#delete', null],
+    [`${origin}/d/${id}#${'A'.repeat(43)}`, '#problem', /incomplete/],
+    [`${origin}/d/${id}#d.${'A'.repeat(43)}`, '#delete', null],
   ];
   for (const [url, visible, problem] of pages) {
     for (const colorScheme of ['light', 'dark'] as const) {
@@ -337,7 +338,7 @@ test('text paste: encrypt, share, decrypt; HTML in the paste stays text', async 
   const text = 'Grüße 🔐\n<img src=x onerror="window.__pwned=1"><script>window.__pwned=2</script>\n\ttabs   and spaces';
   const { share, del } = await createPaste({ text, expiry: '300' });
   assert.match(share, new RegExp(`^${origin}/p/${ID}#${KEY}$`));
-  assert.match(del, new RegExp(`^${origin}/d/${ID}#${KEY}$`));
+  assert.match(del, new RegExp(`^${origin}/d/${ID}#d\\.${KEY}$`));
 
   const h = await open();
   await goto(h, share);

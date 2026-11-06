@@ -12,7 +12,7 @@ import { createHash } from 'node:crypto';
 import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-import { parseAPIOrigin, frontendHeaders } from './frontend.mjs';
+import { parseAPIOrigin, frontendHeaders, contentSecurityPolicy } from './frontend.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const outDir = path.join(root, 'internal', 'assets', 'dist');
@@ -157,7 +157,17 @@ await mkdir(path.join(staticDir, 'assets'), { recursive: true });
 await mkdir(generatedDir, { recursive: true });
 const jsName = `app.${hex(jsBytes)}.js`;
 const cssName = `app.${hex(cssBytes)}.css`;
-const staticHTML = html.replace('/assets/app.js', `/assets/${jsName}`).replace('/assets/app.css', `/assets/${cssName}`);
+// The same policy as a <meta> tag, in case a static host ignores _headers.
+// Browsers ignore frame-ancestors there; X-Frame-Options still covers framing
+// on hosts that do send the headers.
+const metaPolicy = contentSecurityPolicy(apiOrigin).replace("frame-ancestors 'none'; ", '');
+if (metaPolicy.includes('frame-ancestors') || metaPolicy.includes('"')) fail('unexpected Content-Security-Policy for the meta tag');
+const charset = '<meta charset="utf-8">';
+if (html.split(charset).length !== 2) fail('index.html must contain exactly one charset meta tag');
+const staticHTML = html
+  .replace(charset, `${charset}
+<meta http-equiv="Content-Security-Policy" content="${metaPolicy}">`)
+  .replace('/assets/app.js', `/assets/${jsName}`).replace('/assets/app.css', `/assets/${cssName}`);
 await writeFile(path.join(staticDir, 'index.html'), staticHTML);
 await writeFile(path.join(staticDir, 'assets', jsName), jsBytes);
 await writeFile(path.join(staticDir, 'assets', cssName), cssBytes);

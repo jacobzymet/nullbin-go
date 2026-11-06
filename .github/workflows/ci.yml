@@ -302,6 +302,10 @@ jobs:
             -H 'User-Agent: audit-agent-sentinel' \
             'https://localhost/api/v1/pastes/0123456789abcdef0123456789abcdef/read')
           test "$status" = 502
+          # Failed TLS handshakes (a wrong server name, plain HTTP on 443) carry
+          # the client address; at the default level they must not be logged.
+          curl -sk --max-time 5 --resolve nope.invalid:443:127.0.0.1 https://nope.invalid/ -o /dev/null || true
+          curl -s --max-time 5 http://127.0.0.1:443/ -o /dev/null || true
           docker logs nullbin-caddy-1 > caddy-errors.log 2>&1
           python3 - <<'PY'
           import json
@@ -310,6 +314,8 @@ jobs:
           for marker in ('audit-upload-sentinel', 'audit-delete-sentinel', 'audit-burn-sentinel',
                          'audit-comment-sentinel', 'audit-agent-sentinel', '0123456789abcdef0123456789abcdef'):
               assert marker not in raw, 'request data leaked into proxy logs'
+          for marker in ('handshake error from', '"remote"', '"remote_ip"', '"client_ip"', 'RemoteAddr'):
+              assert marker not in raw, 'a client address leaked into proxy logs: ' + marker
           entries = []
           for line in raw.splitlines():
               try:
@@ -357,12 +363,28 @@ jobs:
           # A local release tag on this commit; CI cannot fetch the real ones
           # while the repository is private.
           git tag v9.9.9
-          sudo ./nullbin update v9.9.9 | tee update.txt
-          grep -q 'Nullbin v9.9.9 is running' update.txt
+          # Earlier steps left scratch files in the checkout; a server's has none.
+          git -C .. clean -fdq
+          # A file added to the checkout would be built in, so update refuses.
+          touch ../internal/server/zz_added.go
+          if sudo ./nullbin update v9.9.9; then exit 1; fi
+          rm ../internal/server/zz_added.go
+          sudo ./nullbin update v9.9.9 | tee "$RUNNER_TEMP/update.txt"
+          grep -q 'Nullbin v9.9.9 is running' "$RUNNER_TEMP/update.txt"
           curl -fsSk https://localhost/api/v1/version | grep -q '"version":"v9.9.9"'
           curl -fsSk https://localhost/ | grep -q '>Nullbin v9.9.9<'
-          sudo ./nullbin status | tee status.txt
-          grep -q 'Installed version: v9.9.9' status.txt
+          sudo ./nullbin status | tee "$RUNNER_TEMP/status.txt"
+          grep -q 'Running version:   v9.9.9' "$RUNNER_TEMP/status.txt"
+          grep -q 'Checked-out code:  v9.9.9' "$RUNNER_TEMP/status.txt"
+          # A hand-edited domain reaches the proxy's configuration, so start
+          # checks it as strictly as setup does.
+          cp .env "$RUNNER_TEMP/env.good"
+          sed -i 's/^DOMAIN=localhost$/DOMAIN=localhost {/' .env
+          if sudo ./nullbin start; then exit 1; fi
+          cp "$RUNNER_TEMP/env.good" .env
+          echo 'DOMAIN=other.example.com' >> .env
+          if sudo ./nullbin start; then exit 1; fi
+          cp "$RUNNER_TEMP/env.good" .env
           # Refuses anything that is not a release version or a paste ID.
           if sudo ./nullbin update main; then exit 1; fi
           if sudo ./nullbin delete not-an-id; then exit 1; fi

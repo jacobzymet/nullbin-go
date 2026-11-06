@@ -13,6 +13,11 @@ const TOKEN = /^[A-Za-z0-9_-]{43}$/;
 export const UPLOAD_CHUNK = 4 * 1024 * 1024;
 export const MAX_BURN_READS = 1000;
 
+/** Deadlines, so a server that stops answering cannot leave the page waiting forever. */
+const REQUEST_MS = 60_000;
+const CHUNK_MS = 6 * 60_000; // the server allows a chunk 5 minutes
+const COMMENTS_MS = 2 * 60_000; // a full discussion is about 9 MB
+
 const base: RequestInit = {
   credentials: 'omit',
   cache: 'no-store',
@@ -55,7 +60,7 @@ export async function createPaste(expiresIn: number, burn: boolean, totalSize: n
   if (burnToken !== null) body['burn_token'] = burnToken;
   if (burn && maxReads !== 1) body['max_reads'] = maxReads;
   const resp = await fetch(apiURL('/api/v1/pastes'), {
-    ...base,
+    ...base, signal: AbortSignal.timeout(REQUEST_MS),
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -81,7 +86,7 @@ export async function putChunk(id: string, n: number, uploadToken: string, data:
     let resp: Response | null = null;
     try {
       resp = await fetch(apiURL(`/api/v1/pastes/${id}/chunks/${n}`), {
-        ...base,
+        ...base, signal: AbortSignal.timeout(CHUNK_MS),
         method: 'PUT',
         headers: { 'Content-Type': 'application/octet-stream', 'Nullbin-Upload-Token': uploadToken },
         body: data,
@@ -107,7 +112,7 @@ export async function putChunk(id: string, n: number, uploadToken: string, data:
 
 export async function finalizePaste(id: string, uploadToken: string): Promise<Date | null> {
   const resp = await fetch(apiURL(`/api/v1/pastes/${id}/finalize`), {
-    ...base,
+    ...base, signal: AbortSignal.timeout(REQUEST_MS),
     method: 'POST',
     headers: { 'Nullbin-Upload-Token': uploadToken },
   });
@@ -119,10 +124,19 @@ export async function finalizePaste(id: string, uploadToken: string): Promise<Da
 
 /** Starts downloading a paste's ciphertext. */
 export async function fetchPaste(id: string, burnToken: string | null = null): Promise<{ body: ReadableStream<Uint8Array>; size: number; readsRemaining: number | null }> {
-  const resp = await fetch(apiURL(`/api/v1/pastes/${id}${burnToken === null ? '' : '/read'}`), {
-    ...base, method: burnToken === null ? 'GET' : 'POST',
-    headers: burnToken === null ? {} : { 'Nullbin-Burn-Token': burnToken },
-  });
+  // Only the wait for the response to start is limited here; a download can
+  // take long, and ByteReader fails one that stops arriving.
+  const started = new AbortController();
+  const timer = setTimeout(() => started.abort(), REQUEST_MS);
+  let resp: Response;
+  try {
+    resp = await fetch(apiURL(`/api/v1/pastes/${id}${burnToken === null ? '' : '/read'}`), {
+      ...base, signal: started.signal, method: burnToken === null ? 'GET' : 'POST',
+      headers: burnToken === null ? {} : { 'Nullbin-Burn-Token': burnToken },
+    });
+  } finally {
+    clearTimeout(timer);
+  }
   if (resp.status !== 200 || !resp.body) throw await errorFrom(resp);
   const size = Number(resp.headers.get('Content-Length'));
   let readsRemaining: number | null = null;
@@ -140,7 +154,7 @@ export async function fetchPaste(id: string, burnToken: string | null = null): P
 
 /** Only the public format prefix is exposed before authorizing a burn. */
 export async function fetchBurnPrefix(id: string): Promise<Uint8Array> {
-  const resp = await fetch(apiURL(`/api/v1/pastes/${id}/prefix`), { ...base, method: 'GET' });
+  const resp = await fetch(apiURL(`/api/v1/pastes/${id}/prefix`), { ...base, signal: AbortSignal.timeout(REQUEST_MS), method: 'GET' });
   if (resp.status !== 200 || !resp.body) throw await errorFrom(resp);
   const reader = resp.body.getReader();
   const prefix = new Uint8Array(22);
@@ -162,7 +176,7 @@ export async function fetchBurnPrefix(id: string): Promise<Uint8Array> {
 
 export async function deletePaste(id: string, deleteToken: string): Promise<void> {
   const resp = await fetch(apiURL(`/api/v1/pastes/${id}`), {
-    ...base,
+    ...base, signal: AbortSignal.timeout(REQUEST_MS),
     method: 'DELETE',
     headers: { 'Nullbin-Delete-Token': deleteToken },
   });
@@ -194,7 +208,7 @@ export async function* rechunk(src: AsyncIterable<Uint8Array>, size: number): As
 export async function postComment(id: string, commentToken: string, data: Uint8Array<ArrayBuffer>): Promise<void> {
   for (let attempt = 0; ; attempt++) {
     const resp = await fetch(apiURL(`/api/v1/pastes/${id}/comments`), {
-      ...base,
+      ...base, signal: AbortSignal.timeout(REQUEST_MS),
       method: 'POST',
       headers: { 'Content-Type': 'application/octet-stream', 'Nullbin-Comment-Token': commentToken },
       body: data,
@@ -210,7 +224,7 @@ export async function postComment(id: string, commentToken: string, data: Uint8A
 /** Fetches a discussion's encrypted comments, in arrival order. */
 export async function fetchComments(id: string, commentToken: string): Promise<Uint8Array[]> {
   const resp = await fetch(apiURL(`/api/v1/pastes/${id}/comments`), {
-    ...base,
+    ...base, signal: AbortSignal.timeout(COMMENTS_MS),
     method: 'GET',
     headers: { 'Nullbin-Comment-Token': commentToken },
   });

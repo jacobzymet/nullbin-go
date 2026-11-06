@@ -35,21 +35,27 @@ type allocation struct {
 	removed bool
 }
 
-func allocationSize(size int64, discussion bool) (int64, error) {
-	overhead := int64(entryOverhead)
-	if discussion {
-		overhead += MaxComments*(MaxCommentBytes+4096) + 4096
-	}
-	if size <= 0 || size > math.MaxInt64-overhead {
+// allocationSize is what a paste of size bytes is charged once published.
+// Its comments are charged separately, as they arrive (commentCharge).
+func allocationSize(size int64) (int64, error) {
+	if size <= 0 || size > math.MaxInt64-entryOverhead {
 		return 0, ErrQuota
 	}
-	return size + overhead, nil
+	return size + entryOverhead, nil
+}
+
+// commentCharge is what one comment of n bytes is charged: its data
+// rounded up to whole blocks, plus a directory entry and the temporary
+// file it is written through.
+func commentCharge(n int) int64 {
+	return int64(n/4096+1)*4096 + 4096
 }
 
 // reserve starts a new upload's allocation with its fixed overhead only.
-// Its bytes are charged as chunks arrive (resize), and the rest of the
-// paste's allocation when it is published. An upload that never sends data
-// therefore costs almost nothing, so empty uploads cannot use up the budget.
+// Its bytes are charged as chunks arrive (resize), and comments as they
+// are posted (grow). An upload that never sends data therefore costs almost
+// nothing, so empty uploads cannot use up the budget, and charging is always
+// for data someone actually sent.
 // Holding quotaMu makes simultaneous requests compete for the same budget.
 //
 // need is the paste's full allocation. It must fit in the budget right now,
@@ -88,6 +94,24 @@ func (s *Store) resize(dir string, n int64) error {
 	}
 	s.used += n - a.bytes
 	a.bytes = n
+	return nil
+}
+
+// grow adds delta bytes to a published paste's allocation. Growing fails
+// with ErrQuota if the budget does not allow it; a negative delta undoes an
+// earlier grow and always succeeds.
+func (s *Store) grow(dir string, delta int64) error {
+	s.quotaMu.Lock()
+	defer s.quotaMu.Unlock()
+	a := s.allocations[dir]
+	if a == nil || a.pending {
+		return ErrNotFound
+	}
+	if delta > 0 && (s.used > s.limits.MaxBytes || delta > s.limits.MaxBytes-s.used) {
+		return ErrQuota
+	}
+	s.used += delta
+	a.bytes += delta
 	return nil
 }
 
@@ -146,8 +170,8 @@ func (s *Store) rebuildAllocations() error {
 		}
 		for _, entry := range entries {
 			dir := path.Join(parent, entry.Name())
-			var physical int64
-			err := fs.WalkDir(s.root.FS(), dir, func(_ string, d fs.DirEntry, err error) error {
+			var physical, comments int64
+			err := fs.WalkDir(s.root.FS(), dir, func(name string, d fs.DirEntry, err error) error {
 				if err != nil {
 					return err
 				}
@@ -158,6 +182,9 @@ func (s *Store) rebuildAllocations() error {
 				n := info.Size()
 				if n < 0 || n > math.MaxInt64-4096 {
 					return ErrQuota
+				}
+				if !d.IsDir() && path.Base(path.Dir(name)) == dirComments && validCommentName(d.Name()) {
+					comments += commentCharge(int(min(n, MaxCommentBytes)))
 				}
 				n = (n/4096 + 1) * 4096
 				if n > math.MaxInt64-physical {
@@ -181,11 +208,11 @@ func (s *Store) rebuildAllocations() error {
 			} else {
 				var m Meta
 				if s.readJSON(path.Join(dir, fileMeta), &m) == nil {
-					n, err := allocationSize(m.Size, m.CommentTokenHash != "")
+					n, err := allocationSize(m.Size)
 					if err != nil {
 						return err
 					}
-					reserved = max(reserved, n)
+					reserved = max(reserved, n+comments)
 				}
 			}
 			if reserved > math.MaxInt64-s.used {

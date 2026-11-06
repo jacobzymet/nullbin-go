@@ -12,6 +12,9 @@
 	}
 	# Never try to add Caddy's local test CA to the container's trust store.
 	skip_install_trust
+	# Never enable the debug option here: at debug level Caddy logs every
+	# client address, in message text that no filter can remove. CI checks
+	# that the default level logs none.
 	# Runtime errors also include request headers, even without access
 	# logging. Remove the entire request, including custom capability tokens,
 	# paste IDs, client addresses and user agents, from the default logger.

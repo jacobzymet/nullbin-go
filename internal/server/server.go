@@ -43,21 +43,26 @@ const (
 	maxHeaderBytes    = 16 << 10
 
 	chunkDeadline = 5 * time.Minute
-	chunkGrace    = 15 * time.Second
-	chunkMinRate  = 16 << 10 // bytes per second, averaged after the grace period
+	chunkGrace    = 5 * time.Second // a body that sends nothing frees its slot quickly
+	chunkMinRate  = 16 << 10        // bytes per second, averaged after the grace period
 	// Slots are cheap (a goroutine and a small buffer each); generous totals
 	// mean holding them all takes many client networks.
-	chunkSlotsTotal        = 128
+	chunkSlotsTotal        = 512
 	chunkSlotsPerClient    = 4  // the browser sends one chunk at a time
 	chunkSlotsPerSite      = 16 // per IPv6 /48
 	downloadBaseDeadline   = time.Minute
 	downloadGrace          = 2 * time.Minute // password and save dialogs pause a download
 	downloadSlotsTotal     = 512
 	downloadSlotsPerClient = 16
-	downloadSlotsPerSite   = 64       // per IPv6 /48
+	downloadSlotsPerSite   = 32       // per IPv6 /48
 	pendingPerClient       = 8        // unfinished uploads per client network
 	pendingPerSite         = 32       // unfinished uploads per IPv6 /48
 	downloadMinRate        = 32 << 10 // bytes per second
+	// Requests that write to disk at once (create, finalize, delete,
+	// comment), whatever their clients. Each blocks a thread in fsync, and
+	// the container allows a bounded number of threads.
+	diskWritesTotal = 64
+	diskWriteWait   = 10 * time.Second
 )
 
 // Header names for capability tokens.
@@ -97,6 +102,7 @@ type Server struct {
 	cfg           Config
 	ips           ipResolver
 	creates       *limiter
+	deletes       *limiter
 	uploads       *limiter
 	comments      *limiter
 	pages         *limiter
@@ -106,6 +112,7 @@ type Server struct {
 	chunkSlots    *slotPool
 	downloadSlots *slotPool
 	pending       *pendingTracker
+	diskWrites    chan struct{}
 	handler       http.Handler
 	logger        *log.Logger
 	nowFunc       func() time.Time // clock for rate limiting
@@ -122,16 +129,18 @@ func New(cfg Config) *Server {
 	s := &Server{
 		cfg:           cfg,
 		ips:           ipResolver{trusted: cfg.TrustedProxies},
-		creates:       newLimiter(1.0/3, 20, limiterMaxEntries), // 20 per minute, burst 20
-		uploads:       newLimiter(10, 50, limiterMaxEntries),    // 10 requests/s, burst 50
-		comments:      newLimiter(1.0/3, 10, limiterMaxEntries), // 20 per minute, burst 10
-		pages:         newLimiter(5, 100, limiterMaxEntries),    // pages and static assets
-		downloads:     newLimiter(1.0/3, 20, limiterMaxEntries),
+		creates:       newClientLimiter(1.0/3, 20), // 20 per minute, burst 20
+		deletes:       newClientLimiter(1, 20),     // 60 per minute, burst 20
+		uploads:       newClientLimiter(10, 50),    // 10 requests/s, burst 50
+		comments:      newClientLimiter(1.0/3, 10), // 20 per minute, burst 10
+		pages:         newClientLimiter(5, 100),    // pages, static assets and the version
+		downloads:     newClientLimiter(1.0/3, 20),
 		downloadBytes: newLimiter(clientBytesPerSecond, clientBytesPerSecond, limiterMaxEntries),
 		globalBytes:   newLimiter(globalBytesPerSecond, globalBytesPerSecond, 1),
 		chunkSlots:    newSlotPool(chunkSlotsTotal, chunkSlotsPerClient, chunkSlotsPerSite),
 		downloadSlots: newSlotPool(downloadSlotsTotal, downloadSlotsPerClient, downloadSlotsPerSite),
 		pending:       newPendingTracker(pendingPerClient, pendingPerSite, storage.PendingTTL),
+		diskWrites:    make(chan struct{}, diskWritesTotal),
 		logger:        cfg.Logger,
 		nowFunc:       time.Now,
 
@@ -153,16 +162,16 @@ func New(cfg Config) *Server {
 	}
 
 	// API. Every route declares its maximum body size; most take none.
-	mux.Handle("POST /api/v1/pastes", s.route(maxCreateBody, s.creates, s.handleCreate))
+	mux.Handle("POST /api/v1/pastes", s.route(maxCreateBody, s.creates, s.writing(s.handleCreate)))
 	mux.Handle("PUT /api/v1/pastes/{id}/chunks/{n}", s.route(maxChunkBody, s.uploads, s.handleChunk))
-	mux.Handle("POST /api/v1/pastes/{id}/finalize", s.route(0, s.uploads, s.handleFinalize))
+	mux.Handle("POST /api/v1/pastes/{id}/finalize", s.route(0, s.uploads, s.writing(s.handleFinalize)))
 	mux.Handle("GET /api/v1/pastes/{id}", s.route(0, s.downloads, s.handleGet))
 	mux.Handle("GET /api/v1/pastes/{id}/prefix", s.route(0, s.downloads, s.handleBurnPrefix))
 	mux.Handle("POST /api/v1/pastes/{id}/read", s.route(0, s.downloads, s.handleReadBurn))
-	mux.Handle("DELETE /api/v1/pastes/{id}", s.route(0, nil, s.handleDelete))
-	mux.Handle("POST /api/v1/pastes/{id}/comments", s.route(storage.MaxCommentBytes, s.comments, s.handleAddComment))
+	mux.Handle("DELETE /api/v1/pastes/{id}", s.route(0, s.deletes, s.writing(s.handleDelete)))
+	mux.Handle("POST /api/v1/pastes/{id}/comments", s.route(storage.MaxCommentBytes, s.comments, s.writing(s.handleAddComment)))
 	mux.Handle("GET /api/v1/pastes/{id}/comments", s.route(0, s.downloads, s.handleComments))
-	mux.Handle("GET /api/v1/version", s.route(0, nil, s.handleVersion))
+	mux.Handle("GET /api/v1/version", s.route(0, s.pages, s.handleVersion))
 
 	var h http.Handler = mux
 	crossOrigin := http.NewCrossOriginProtection()
@@ -519,6 +528,11 @@ func (s *Server) handleBurnPrefix(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) download(w http.ResponseWriter, r *http.Request, burn bool) {
+	id := r.PathValue("id")
+	if !storage.ValidID(id) {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
 	ip := s.ips.clientIP(r)
 	release, ok := s.downloadSlots.acquire(ip)
 	if !ok {
@@ -527,11 +541,6 @@ func (s *Server) download(w http.ResponseWriter, r *http.Request, burn bool) {
 		return
 	}
 	defer release()
-	id := r.PathValue("id")
-	if !storage.ValidID(id) {
-		writeError(w, http.StatusNotFound, "not found")
-		return
-	}
 	// Allocate a bandwidth bucket before claiming a burn paste. Fail closed
 	// if the bounded client table is full.
 	if ok, _ := s.downloadBytes.allowN(ip, time.Now(), 0); !ok {
@@ -628,6 +637,8 @@ func (s *Server) handleAddComment(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not found")
 	case errors.Is(err, storage.ErrTooLarge):
 		writeError(w, http.StatusRequestEntityTooLarge, "comment too large")
+	case errors.Is(err, storage.ErrQuota):
+		writeError(w, http.StatusInsufficientStorage, "storage capacity reached")
 	case errors.Is(err, storage.ErrDiscussionFull):
 		writeError(w, http.StatusConflict, "this discussion is full")
 	case errors.Is(err, storage.ErrConflict):
@@ -638,6 +649,11 @@ func (s *Server) handleAddComment(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleComments(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !storage.ValidID(id) {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
 	ip := s.ips.clientIP(r)
 	release, ok := s.downloadSlots.acquire(ip)
 	if !ok {
@@ -649,11 +665,6 @@ func (s *Server) handleComments(w http.ResponseWriter, r *http.Request) {
 	if ok, _ := s.downloadBytes.allowN(ip, time.Now(), 0); !ok {
 		w.Header().Set("Retry-After", "60")
 		writeError(w, http.StatusTooManyRequests, "rate limited")
-		return
-	}
-	id := r.PathValue("id")
-	if !storage.ValidID(id) {
-		writeError(w, http.StatusNotFound, "not found")
 		return
 	}
 	comments, err := s.cfg.Store.Comments(id, r.Header.Get(CommentTokenHeader))
@@ -749,18 +760,18 @@ func parseChunkIndex(s string) (int, bool) {
 	if s == "" || len(s) > 10 || (len(s) > 1 && s[0] == '0') {
 		return 0, false
 	}
-	n := 0
+	var n int64 // wide enough for 10 digits on 32-bit platforms too
 	for i := 0; i < len(s); i++ {
 		c := s[i]
 		if c < '0' || c > '9' {
 			return 0, false
 		}
-		n = n*10 + int(c-'0')
+		n = n*10 + int64(c-'0')
 	}
 	if n > maxChunkIndex {
 		return 0, false
 	}
-	return n, true
+	return int(n), true
 }
 
 func hasContentType(r *http.Request, want string) bool {
@@ -796,4 +807,26 @@ func (rr *readErrRecorder) Read(p []byte) (int, error) {
 		rr.err = err
 	}
 	return n, err
+}
+
+// writing runs h once one of the diskWritesTotal places for disk-writing
+// requests is free, waiting at most diskWriteWait. Each such request can
+// hold an operating-system thread in fsync; without a bound, a burst of
+// them could reach the container's thread limit.
+func (s *Server) writing(h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		timer := time.NewTimer(diskWriteWait)
+		defer timer.Stop()
+		select {
+		case s.diskWrites <- struct{}{}:
+		case <-timer.C:
+			w.Header().Set("Retry-After", "5")
+			writeError(w, http.StatusServiceUnavailable, "server busy")
+			return
+		case <-r.Context().Done():
+			return
+		}
+		defer func() { <-s.diskWrites }()
+		h(w, r)
+	}
 }

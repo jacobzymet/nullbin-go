@@ -26,8 +26,9 @@ export const MAX_COMMENT_TIME = 8_640_000_000_000_000;
 
 const NONCE_BYTES = 24;
 const ID = /^[0-9a-f]{32}$/;
-// Control characters and bidi overrides, which could disguise a name.
-const UNSAFE_CHARS = /[\u0000-\u001f\u007f-\u009f\u061C\u200B-\u200F\u202A-\u202E\u2066-\u2069]/g;
+// Control characters, bidi overrides and invisible characters, which could
+// disguise a name.
+const UNSAFE_CHARS = /[\u0000-\u001f\u007f-\u009f\u061C\u200B-\u200F\u202A-\u202E\u2060\u2066-\u2069\uFEFF]|[\u{E0000}-\u{E007F}]/gu;
 
 export interface CommentDraft {
   /** id of the comment this replies to, or null. */
@@ -125,24 +126,36 @@ export interface ThreadNode {
   replies: ThreadNode[];
 }
 
+/** Comments with duplicate ids (a replayed comment) removed, keeping the first copy. */
+export function uniqueComments(comments: Comment[]): Comment[] {
+  const seen = new Set<string>();
+  return comments.filter((c) => !seen.has(c.id) && seen.add(c.id));
+}
+
 /**
  * Builds the reply tree in arrival order. Duplicate ids (a replayed
- * comment) keep the first copy. Replies to unknown comments, and replies
- * that would form a loop, become top-level comments.
+ * comment) keep the first copy. A reply sits under its parent wherever the
+ * server placed the two in the list. Replies to unknown comments, and
+ * comments whose parents lead back to themselves, become top-level.
  */
 export function buildThread(comments: Comment[]): ThreadNode[] {
   const nodes = new Map<string, ThreadNode>();
-  const order = new Map<string, number>();
-  comments.forEach((c, i) => {
-    if (nodes.has(c.id)) return;
-    nodes.set(c.id, { comment: c, replies: [] });
-    order.set(c.id, i);
-  });
+  for (const c of uniqueComments(comments)) nodes.set(c.id, { comment: c, replies: [] });
+  const loops = (node: ThreadNode): boolean => {
+    const seen = new Set<string>([node.comment.id]);
+    for (let p = node.comment.parent; p !== null; ) {
+      if (seen.has(p)) return true;
+      seen.add(p);
+      const up = nodes.get(p);
+      if (!up) return false;
+      p = up.comment.parent;
+    }
+    return false;
+  };
   const roots: ThreadNode[] = [];
   for (const node of nodes.values()) {
     const parent = node.comment.parent ? nodes.get(node.comment.parent) : undefined;
-    // A parent must have arrived earlier; this also rules out loops.
-    if (parent && order.get(parent.comment.id)! < order.get(node.comment.id)!) parent.replies.push(node);
+    if (parent && !loops(node)) parent.replies.push(node);
     else roots.push(node);
   }
   return roots;

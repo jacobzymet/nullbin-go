@@ -16,7 +16,7 @@ import {
   parseMeta,
   type PasteMeta,
 } from '../src/format.ts';
-import { encodeKeyFragment, parseKeyFragment, parseTokenFragment } from '../src/link.ts';
+import { encodeKeyFragment, encodeTokenFragment, parseKeyFragment, parseTokenFragment } from '../src/link.ts';
 
 const sodium = await loadSodium();
 
@@ -353,7 +353,10 @@ test('fragment encoding and strict parsing', () => {
   for (const bad of ['', '#', plain.slice(1), `${plain}A`, `${plain}.x`, `${plain}.b.b`, `${plain}=`, plain.replace(/.$/, '/'), `${plain.slice(0, 42)}B`]) {
     assert.equal(parseKeyFragment(sodium, bad), null, `accepted ${bad}`);
   }
-  assert.equal(parseTokenFragment(`#${plain}`), plain);
+  assert.equal(parseTokenFragment(`#d.${plain}`), plain);
+  assert.equal(parseTokenFragment(`#${plain}`), null, 'a bare key must never pass as a delete token');
+  assert.equal(parseTokenFragment(`#${encodeTokenFragment(plain)}`), plain);
+  assert.equal(parseTokenFragment(`#d.${plain}.b`), null);
   assert.equal(parseTokenFragment('#short'), null);
   assert.equal(parseTokenFragment(`#${plain}<`), null);
 });
