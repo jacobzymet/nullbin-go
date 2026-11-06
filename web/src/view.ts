@@ -35,6 +35,19 @@ interface SaveFilePickerWindow {
 export const MAX_PREVIEW_LINES = 5000;
 export const MAX_PREVIEW_CHARS = 100_000;
 
+// Characters that change how text looks without being visible: direction
+// overrides, embeddings, isolates and marks, the zero-width space, the word
+// joiner, a byte-order mark after the start, and Unicode tag characters.
+// They let a paste display differently from what copying it yields
+// ("Trojan Source", CVE-2021-42574). Zero-width joiners and non-joiners are
+// not flagged: emoji and Persian or Indic scripts use them legitimately.
+const HIDDEN_CHARS = /[\u061C\u200B\u200E\u200F\u202A-\u202E\u2060\u2066-\u2069]|(?<!^)\uFEFF|[\u{E0000}-\u{E007F}]/u;
+
+/** Reports whether text contains characters that can disguise what it says. */
+export function hasHiddenChars(text: string): boolean {
+  return HIDDEN_CHARS.test(text);
+}
+
 /** Count without splitting millions of lines into a large temporary array. */
 export function textPreview(text: string): { text: string; lines: number; truncated: boolean } {
   let lines = 1;
@@ -179,6 +192,7 @@ function renderText(text: string): void {
   const bytes = new TextEncoder().encode(text).length;
   el('view-text-meta').textContent = `${preview.lines.toLocaleString()} ${preview.lines === 1 ? 'line' : 'lines'} · ${formatBytes(bytes)}`;
   show(el('view-text-truncated'), preview.truncated);
+  show(el('view-text-hidden'), hasHiddenChars(text));
 
   const wrap = el<HTMLButtonElement>('wrap-toggle');
   wrap.addEventListener('click', () => {
@@ -334,11 +348,11 @@ async function saveWithBlob(file: AsyncGenerator<Uint8Array>, name: string, size
 
 /**
  * A download name without path separators, control characters or bidi
- * controls (which can make "invoice‮fdp.exe" display as "invoiceexe.pdf").
+ * controls (which can make "invoice\u202Efdp.exe" display as "invoiceexe.pdf").
  */
 export function safeFilename(name: string | null): string {
   const cleaned = (name ?? '')
-    .replace(/[\u0000-\u001f\u007f-\u009f؜‎‏‪-‮⁦-⁩/\\:*?"<>|]/g, '_')
+    .replace(/[\u0000-\u001f\u007f-\u009f\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069/\\:*?"<>|]/g, '_')
     .replace(/^[.\s]+/, '')
     .trim();
   return cleaned.slice(0, 200) || 'download';

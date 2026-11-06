@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { UPLOAD_CHUNK, fetchPaste, rechunk } from '../src/api.ts';
-import { safeFilename, textPreview, MAX_PREVIEW_LINES, MAX_PREVIEW_CHARS } from '../src/view.ts';
+import { hasHiddenChars, safeFilename, textPreview, MAX_PREVIEW_LINES, MAX_PREVIEW_CHARS } from '../src/view.ts';
 import { CloneableAttachment, MAX_BUFFERED_DOWNLOAD } from '../src/attachments.ts';
 import { emailHref } from '../src/share.ts';
 
@@ -87,8 +87,8 @@ test('safeFilename strips paths and control characters', () => {
     ['..\\..\\windows\\system32', '_.._windows_system32'],
     ['.bashrc', 'bashrc'],
     ['a\u0000b\nc.txt', 'a_b_c.txt'],
-    ['invoice‮fdp.exe', 'invoice_fdp.exe'], // right-to-left override hides the real extension
-    ['x⁦y‏z', 'x_y_z'],
+    ['invoice\u202Efdp.exe', 'invoice_fdp.exe'], // right-to-left override hides the real extension
+    ['x\u2066y\u200Fz', 'x_y_z'],
     ['con:name?.txt', 'con_name_.txt'],
     ['', 'download'],
     [null, 'download'],
@@ -190,4 +190,16 @@ test('the page opts out of translation, and every text field opts out of spell c
 test('upload chunks meet the server minimum and maximum', () => {
   // internal/storage.MinChunkBytes and internal/server.maxChunkBody.
   assert.ok(UPLOAD_CHUNK >= 4 * 1024 * 1024 && UPLOAD_CHUNK <= 8 * 1024 * 1024);
+});
+
+test('text that can look different from what it contains is flagged', () => {
+  // Trojan Source: an override makes a line display reversed.
+  assert.equal(hasHiddenChars('if (admin) {\u202E } \u2066// check\u2069'), true);
+  for (const c of ['\u061C', '\u200B', '\u200E', '\u200F', '\u202A', '\u202E', '\u2060', '\u2066', '\u2069', '\uFEFF', '\u{E0041}']) {
+    assert.equal(hasHiddenChars(`a${c}b`), true, `U+${c.codePointAt(0)!.toString(16)} must be flagged`);
+  }
+  // Ordinary text, accents, right-to-left scripts, emoji and a leading BOM are fine.
+  for (const ok of ['plain text\n\tindented', 'café naïve', 'שלום עולם', 'مرحبا', '👍🏽 👨\u200D👩\u200D👧', 'می\u200Cخواهم', '\uFEFFfirst line']) {
+    assert.equal(hasHiddenChars(ok), false, `${JSON.stringify(ok)} must not be flagged`);
+  }
 });

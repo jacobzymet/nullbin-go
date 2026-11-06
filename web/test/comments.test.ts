@@ -78,7 +78,7 @@ test('empty and oversized comments are refused before sending', () => {
 });
 
 test('names lose control and bidi characters', () => {
-  assert.equal(cleanName('ali‮ce\u0000\n bob'), 'alice bob');
+  assert.equal(cleanName('ali\u202Ece\u0000\n bob'), 'alice bob');
   assert.equal(cleanName('x'.repeat(100)).length, 40);
 });
 

@@ -27,7 +27,7 @@ export const MAX_COMMENT_TIME = 8_640_000_000_000_000;
 const NONCE_BYTES = 24;
 const ID = /^[0-9a-f]{32}$/;
 // Control characters and bidi overrides, which could disguise a name.
-const UNSAFE_CHARS = /[\u0000-\u001f\u007f-\u009f؜​-‏‪-‮⁦-⁩]/g;
+const UNSAFE_CHARS = /[\u0000-\u001f\u007f-\u009f\u061C\u200B-\u200F\u202A-\u202E\u2066-\u2069]/g;
 
 export interface CommentDraft {
   /** id of the comment this replies to, or null. */
