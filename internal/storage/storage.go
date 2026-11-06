@@ -63,7 +63,7 @@ const PendingTTL = time.Hour
 // PendingIdle is how long an unfinished upload may go without completing a
 // chunk. Browsers send chunks back to back, so an idle upload was
 // abandoned. Expiring it quickly stops idle uploads from holding the
-// limited pending slots and their storage reservations. A chunk still
+// limited pending slots and the storage they were charged. A chunk still
 // arriving keeps its upload alive: the upload stays locked meanwhile.
 const PendingIdle = 2 * time.Minute
 
@@ -71,6 +71,10 @@ const PendingIdle = 2 * time.Minute
 // completes an upload. Browsers send 4 MiB chunks. Keeping an upload alive
 // therefore costs real bandwidth, not one byte every couple of minutes.
 const MinChunkBytes = 4 << 20
+
+// MaxChunkBytes is the largest chunk accepted. Each chunk is charged to
+// the storage budget before it is written.
+const MaxChunkBytes = 8 << 20
 
 // MaxBurnReads bounds the configurable number of authorized opens.
 const MaxBurnReads = 1000
@@ -316,7 +320,11 @@ func (s *Store) CreatePendingWithReadLimit(expiresIn time.Duration, burn bool, t
 		return Created{}, ErrConflict
 	}
 	defer s.unlock(c.ID)
-	if err := s.reserve(dir, totalSize, commentToken != ""); err != nil {
+	need, err := allocationSize(totalSize, commentToken != "")
+	if err != nil {
+		return Created{}, err
+	}
+	if err := s.reserve(dir, need); err != nil {
 		return Created{}, err
 	}
 	if err := s.root.Mkdir(dir, dirPerm); err != nil {
@@ -340,7 +348,7 @@ func (s *Store) CreatePendingWithReadLimit(expiresIn time.Duration, burn bool, t
 	if commentToken != "" {
 		u.CommentTokenHash = HashToken(commentToken)
 	}
-	err := s.writeJSON(dir, fileUpload, u)
+	err = s.writeJSON(dir, fileUpload, u)
 	if err == nil {
 		var f *os.File
 		f, err = s.root.OpenFile(path.Join(dir, fileBlob), os.O_WRONLY|os.O_CREATE|os.O_EXCL, filePerm)
@@ -384,6 +392,15 @@ func (s *Store) AppendChunk(id string, n int, uploadToken string, body io.Reader
 		return ErrTooLarge
 	}
 
+	// Charge the most this chunk can add before writing any of it. The
+	// allocation is set absolutely, so an earlier failure never leaves it off.
+	charged := entryOverhead + u.Received
+	limit := min(remaining, MaxChunkBytes)
+	if err := s.resize(dir, charged+limit); err != nil {
+		return err
+	}
+	keep := charged // what stays charged afterwards; shrinking never fails
+	defer func() { s.resize(dir, keep) }()
 	f, err := s.root.OpenFile(path.Join(dir, fileBlob), os.O_WRONLY, 0)
 	if err != nil {
 		return err
@@ -396,8 +413,8 @@ func (s *Store) AppendChunk(id string, n int, uploadToken string, body io.Reader
 	if _, err := f.Seek(u.Received, io.SeekStart); err != nil {
 		return err
 	}
-	written, err := io.Copy(f, io.LimitReader(body, remaining+1))
-	if err == nil && written > remaining {
+	written, err := io.Copy(f, io.LimitReader(body, limit+1))
+	if err == nil && written > limit {
 		err = ErrTooLarge
 	}
 	if err == nil && written == 0 {
@@ -413,6 +430,7 @@ func (s *Store) AppendChunk(id string, n int, uploadToken string, body io.Reader
 		f.Truncate(u.Received)
 		return err
 	}
+	keep = charged + written
 	u.Received += written
 	u.NextChunk++
 	u.UpdatedAt = s.now().UTC()
@@ -437,6 +455,15 @@ func (s *Store) Finalize(id, uploadToken string) (Meta, error) {
 	}
 	if u.Received != u.TotalSize {
 		return Meta{}, ErrIncomplete
+	}
+	// Publishing charges the paste's whole allocation, including space for
+	// a discussion. If the budget is full the upload stays unfinished.
+	full, err := allocationSize(u.Received, u.CommentTokenHash != "")
+	if err != nil {
+		return Meta{}, err
+	}
+	if err := s.resize(dir, full); err != nil {
+		return Meta{}, err
 	}
 
 	// Make sure the blob is exactly the received bytes and on disk.

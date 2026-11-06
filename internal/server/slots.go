@@ -114,9 +114,9 @@ func (m *minRateReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-// pendingTracker caps the unfinished uploads each client network may hold
-// open, so one client cannot take every pending slot (and its storage
-// reservation) for the whole pending lifetime.
+// pendingTracker caps the unfinished uploads each client network (and each
+// IPv6 /48) may hold open, so one client cannot take every pending slot for
+// the whole pending lifetime.
 //
 // Each reservation belongs to one upload and ends when that upload is
 // finalized, from any network, or would have expired. So the tracker never
@@ -124,12 +124,15 @@ func (m *minRateReader) Read(p []byte) (int, error) {
 // are kept, never addresses or upload IDs, and nothing links a client to a
 // paste once it is published.
 type pendingTracker struct {
-	max  int
-	ttl  time.Duration
-	keys *limiter // only its keyed hashes are used
+	max     int
+	maxSite int // per IPv6 /48
+	ttl     time.Duration
+	keys    *limiter // only its keyed hashes are used
 
 	mu      sync.Mutex
 	clients map[[16]byte][]pendingUpload // oldest first, at most max per client
+	siteOf  map[[16]byte][16]byte        // IPv6 client hash -> its /48 hash
+	sites   map[[16]byte]int             // /48 hash -> entries of its clients
 	owners  map[[16]byte][16]byte        // upload ID hash -> client hash
 }
 
@@ -139,12 +142,15 @@ type pendingUpload struct {
 	named bool
 }
 
-func newPendingTracker(max int, ttl time.Duration) *pendingTracker {
+func newPendingTracker(max, maxSite int, ttl time.Duration) *pendingTracker {
 	return &pendingTracker{
 		max:     max,
+		maxSite: maxSite,
 		ttl:     ttl,
 		keys:    newLimiter(0, 0, 0),
 		clients: make(map[[16]byte][]pendingUpload),
+		siteOf:  make(map[[16]byte][16]byte),
+		sites:   make(map[[16]byte]int),
 		owners:  make(map[[16]byte][16]byte),
 	}
 }
@@ -163,8 +169,19 @@ func (p *pendingTracker) live(k [16]byte, now time.Time) []pendingUpload {
 }
 
 // set stores a client's entries, forgetting the client when none are left.
-// Requires mu.
+// Every change to a client's entries goes through it, so it keeps the /48
+// counts in step. Requires mu.
 func (p *pendingTracker) set(k [16]byte, s []pendingUpload) []pendingUpload {
+	if site, ok := p.siteOf[k]; ok {
+		if n := p.sites[site] + len(s) - len(p.clients[k]); n > 0 {
+			p.sites[site] = n
+		} else {
+			delete(p.sites, site)
+		}
+		if len(s) == 0 {
+			delete(p.siteOf, k)
+		}
+	}
 	if len(s) == 0 {
 		delete(p.clients, k)
 		return nil
@@ -177,16 +194,23 @@ func (p *pendingTracker) set(k [16]byte, s []pendingUpload) []pendingUpload {
 // Follow it with created once the upload exists, or cancel if it does not.
 func (p *pendingTracker) reserve(ip netip.Addr, now time.Time) bool {
 	k := p.keys.hash(ip)
+	site, isV6 := p.keys.hashSite(ip)
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	s := p.live(k, now)
 	if len(s) >= p.max {
 		return false
 	}
+	if isV6 && p.sites[site] >= p.maxSite {
+		return false
+	}
 	if s == nil && len(p.clients) >= limiterMaxEntries {
 		return false // bounded memory; fail closed like the rate limiters
 	}
-	p.clients[k] = append(s, pendingUpload{start: now})
+	if isV6 {
+		p.siteOf[k] = site
+	}
+	p.set(k, append(s, pendingUpload{start: now}))
 	return true
 }
 

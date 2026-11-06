@@ -314,6 +314,8 @@ function describe(e: unknown): string {
       return typeof max === 'number' ? `This paste is too large. The limit on this server is ${formatBytes(max)}.` : 'This paste is too large.';
     }
     if (e.status === 429) return 'Too many pastes in a short time. Wait a minute, then try again.';
+    if (e.status === 507) return 'This server is out of storage space right now. Try again later, or try a smaller paste.';
+    if (e.status === 503) return 'This server is busy with other uploads. Wait a minute, then try again.';
     // Unfinished uploads expire after 2 minutes without progress.
     if (e.status === 404) return 'The upload paused for too long and expired. Try again.';
     return `The server refused the upload: ${e.message}.`;

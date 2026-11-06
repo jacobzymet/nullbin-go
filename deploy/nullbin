@@ -51,15 +51,25 @@ main() {
   }
   g() { as_owner git -C "$repo" "$@"; }
 
+  # IPv6 on the public network keeps IPv6 visitors' own addresses (see
+  # compose.yaml). Docker can create it only where the kernel has IPv6.
+  local ipv6=false
+  if [[ $(cat /proc/sys/net/ipv6/conf/all/disable_ipv6 2>/dev/null) == 0 ]]; then
+    ipv6=true
+  fi
+
   # Which layout: Option A (.env) or Option B (.env.api).
   local -a compose=()
+  local config=
   layout() {
     if [[ -f $deploy/.env && -f $deploy/.env.api ]]; then
       die "both deploy/.env and deploy/.env.api exist; remove the one you do not use"
     elif [[ -f $deploy/.env ]]; then
-      compose=(docker compose -f "$deploy/compose.yaml")
+      config=.env
+      compose=(env "NULLBIN_IPV6=$ipv6" docker compose -f "$deploy/compose.yaml")
     elif [[ -f $deploy/.env.api ]]; then
-      compose=(docker compose --env-file "$deploy/.env.api" -f "$deploy/compose.api.yaml")
+      config=.env.api
+      compose=(env "NULLBIN_IPV6=$ipv6" docker compose --env-file "$deploy/.env.api" -f "$deploy/compose.api.yaml")
     else
       die "not configured yet: run sudo ./nullbin setup paste.example.com (or setup-api for the separate-API layout)"
     fi
@@ -114,6 +124,12 @@ main() {
   start() {
     local version
     version=$(installed)
+    # Configurations from before v0.2.5 hold the old default of 64, which a
+    # few client networks could fill with empty uploads.
+    if as_owner grep -q -x -- 'MAX_PENDING=64' "$deploy/$config"; then
+      as_owner sed -i -- 's/^MAX_PENDING=64$/MAX_PENDING=1024/' "$deploy/$config"
+      echo "Raised MAX_PENDING in deploy/$config from the old default 64 to the new default 1024."
+    fi
     echo "Building and starting Nullbin $version. The first build takes a few minutes."
     VERSION=$version "${compose[@]}" up -d --build --wait --wait-timeout 600
     echo "Nullbin $version is running."
@@ -187,7 +203,9 @@ $changes
 See them with: git -C $repo diff
 Set them aside with: git -C $repo stash"
       g -c advice.detachedHead=false checkout --quiet "$target"
-      start
+      # Start with the release's own copy of this script, so changes to how
+      # Nullbin starts take effect with the update that brings them.
+      exec "$deploy/nullbin" start
       ;;
     status)
       layout

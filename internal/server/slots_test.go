@@ -264,7 +264,7 @@ func TestFinalizeFromAnotherNetworkFreesTheReservation(t *testing.T) {
 }
 
 func TestPendingTrackerExpiresEntries(t *testing.T) {
-	p := newPendingTracker(2, time.Hour)
+	p := newPendingTracker(2, 1000, time.Hour)
 	ip := netip.MustParseAddr("192.0.2.1")
 	now := time.Now()
 	for i, want := range []bool{true, true, false} {
@@ -385,7 +385,7 @@ func (e *testEnv) statusOf(t *testing.T, client string) int {
 }
 
 func TestReconcileKeepsNewReservations(t *testing.T) {
-	p := newPendingTracker(8, time.Hour)
+	p := newPendingTracker(8, 1000, time.Hour)
 	ip := netip.MustParseAddr("192.0.2.1")
 	now := time.Now()
 	p.reserve(ip, now)
@@ -471,5 +471,55 @@ func TestStalledDownloadIsCutOff(t *testing.T) {
 			t.Fatal("a client that stopped reading still holds its download slot")
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// One /48 holds 65,536 /64s and is free from tunnel brokers, so the
+// per-client limit alone would let one attacker open every unfinished upload.
+func TestOneIPv6SiteCannotHoldAllPendingUploads(t *testing.T) {
+	e := newEnv(t, func(c *Config) {
+		c.TrustedProxies = []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8")}
+	})
+	create := func(xff string) int {
+		resp, _ := e.do(t, "POST", "/api/v1/pastes", []byte(`{"expires_in":3600,"burn_after_reading":false,"total_size":100}`),
+			map[string]string{"Content-Type": "application/json", "X-Forwarded-For": xff})
+		return resp.StatusCode
+	}
+	// One upload from each of many /64s inside 2001:db8:1::/48.
+	for i := range pendingPerSite {
+		if code := create(fmt.Sprintf("2001:db8:1:%x::1", i)); code != http.StatusCreated {
+			t.Fatalf("create %d: %d", i, code)
+		}
+	}
+	if code := create("2001:db8:1:ffff::1"); code != http.StatusServiceUnavailable {
+		t.Fatalf("create beyond the /48 limit: %d, want 503", code)
+	}
+	if code := create("2001:db8:2::1"); code != http.StatusCreated {
+		t.Fatalf("another /48 was refused: %d", code)
+	}
+	if code := create("192.0.2.9"); code != http.StatusCreated {
+		t.Fatalf("an IPv4 client was refused: %d", code)
+	}
+}
+
+func TestPendingTrackerCountsSitesExactly(t *testing.T) {
+	p := newPendingTracker(2, 3, time.Hour)
+	now := time.Now()
+	a, b := netip.MustParseAddr("2001:db8:5:1::1"), netip.MustParseAddr("2001:db8:5:2::1")
+	for i, tc := range []struct {
+		ip   netip.Addr
+		want bool
+	}{{a, true}, {a, true}, {a, false}, {b, true}, {b, false}} {
+		if got := p.reserve(tc.ip, now); got != tc.want {
+			t.Fatalf("reserve %d = %v, want %v", i, got, tc.want)
+		}
+	}
+	p.cancel(a) // frees one place in the /48
+	if !p.reserve(b, now) {
+		t.Fatal("cancelled reservation still counted for the /48")
+	}
+	p.prune(now.Add(2 * time.Hour))
+	if len(p.clients) != 0 || len(p.sites) != 0 || len(p.siteOf) != 0 {
+		t.Fatalf("left over: %d clients, %d sites, %d site links", len(p.clients), len(p.sites), len(p.siteOf))
 	}
 }

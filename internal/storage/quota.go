@@ -8,8 +8,11 @@ import (
 )
 
 const (
-	DefaultMaxBytes   = 10 << 30
-	DefaultMaxPending = 64
+	DefaultMaxBytes = 10 << 30
+	// An unfinished upload costs a directory and its overhead until data
+	// arrives, so many can be allowed; that makes holding them all take
+	// many client networks (see the server's per-client limits).
+	DefaultMaxPending = 1024
 	// Charge for directory entries, metadata, block rounding and atomic
 	// replacement files, including the transient finalize metadata.
 	entryOverhead = 32 << 10
@@ -43,19 +46,23 @@ func allocationSize(size int64, discussion bool) (int64, error) {
 	return size + overhead, nil
 }
 
-// reserve accounts for the entire upload before any disk write. Holding
-// quotaMu makes simultaneous create requests compete for the same budget.
-func (s *Store) reserve(dir string, size int64, discussion bool) error {
-	n, err := allocationSize(size, discussion)
-	if err != nil {
-		return err
-	}
+// reserve starts a new upload's allocation with its fixed overhead only.
+// Its bytes are charged as chunks arrive (resize), and the rest of the
+// paste's allocation when it is published. An upload that never sends data
+// therefore costs almost nothing, so empty uploads cannot use up the budget.
+// Holding quotaMu makes simultaneous requests compete for the same budget.
+//
+// need is the paste's full allocation. It must fit in the budget right now,
+// so an upload that cannot fit fails at once rather than part-way, but it
+// is not held.
+func (s *Store) reserve(dir string, need int64) error {
+	const n = entryOverhead
 	s.quotaMu.Lock()
 	defer s.quotaMu.Unlock()
 	if s.pending >= s.limits.MaxPending {
 		return ErrUploadLimit
 	}
-	if s.used > s.limits.MaxBytes || n > s.limits.MaxBytes-s.used {
+	if s.used > s.limits.MaxBytes || max(need, n) > s.limits.MaxBytes-s.used {
 		return ErrQuota
 	}
 	if s.allocations[dir] != nil {
@@ -64,6 +71,23 @@ func (s *Store) reserve(dir string, size int64, discussion bool) error {
 	s.allocations[dir] = &allocation{bytes: n, pending: true}
 	s.used += n
 	s.pending++
+	return nil
+}
+
+// resize sets a pending upload's allocation to n bytes. Growing fails with
+// ErrQuota if the budget does not allow it; shrinking always succeeds.
+func (s *Store) resize(dir string, n int64) error {
+	s.quotaMu.Lock()
+	defer s.quotaMu.Unlock()
+	a := s.allocations[dir]
+	if a == nil || !a.pending {
+		return ErrNotFound
+	}
+	if delta := n - a.bytes; delta > 0 && (s.used > s.limits.MaxBytes || delta > s.limits.MaxBytes-s.used) {
+		return ErrQuota
+	}
+	s.used += n - a.bytes
+	a.bytes = n
 	return nil
 }
 
@@ -110,7 +134,8 @@ func (s *Store) removeAllocated(dir string) error {
 }
 
 // rebuildAllocations runs before requests can start. Pending uploads are
-// charged for their declared size, including bytes not received yet.
+// charged for the bytes they have received, published pastes for their
+// full allocation.
 // Unknown/corrupt entries are still counted; only successful removal frees
 // their capacity. Lowering the quota never deletes live pastes.
 func (s *Store) rebuildAllocations() error {
@@ -148,11 +173,10 @@ func (s *Store) rebuildAllocations() error {
 			if parent == dirPending {
 				var u upload
 				if s.readJSON(path.Join(dir, fileUpload), &u) == nil {
-					n, err := allocationSize(u.TotalSize, u.CommentTokenHash != "")
-					if err != nil {
-						return err
+					if u.Received < 0 || u.Received > math.MaxInt64-entryOverhead {
+						return ErrQuota
 					}
-					reserved = max(reserved, n)
+					reserved = max(reserved, entryOverhead+u.Received)
 				}
 			} else {
 				var m Meta

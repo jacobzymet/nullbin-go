@@ -11,19 +11,37 @@ import (
 	"time"
 )
 
-func TestQuotaReservesWholeUploadsConcurrently(t *testing.T) {
-	const size = 100_000
-	charge, _ := allocationSize(size, false)
-	s, err := OpenWithLimits(t.TempDir(), Limits{MaxBytes: 3 * charge, MaxPending: 100})
+// An upload that sends nothing must cost only its fixed overhead, so empty
+// uploads cannot use up the budget; bytes are charged as they arrive.
+func TestQuotaChargesUploadsOnlyForBytesReceived(t *testing.T) {
+	const size = 1000
+	s, err := OpenWithLimits(t.TempDir(), Limits{MaxBytes: 4*entryOverhead + size, MaxPending: 100})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer s.Close()
+	s.SetMinChunk(1)
+	var ups []Created
+	for range 4 {
+		c, err := s.CreatePending(time.Hour, false, size, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		ups = append(ups, c)
+	}
+	if s.used != 4*entryOverhead {
+		t.Fatalf("empty uploads charged %d, want %d", s.used, 4*entryOverhead)
+	}
+	// A fifth could not be stored in full right now, so it fails at once.
+	if _, err := s.CreatePending(time.Hour, false, size, ""); !errors.Is(err, ErrQuota) {
+		t.Fatalf("create beyond the budget: %v", err)
+	}
+	// Uploads that send data compete for what is left: only one fits.
 	var winners atomic.Int32
 	var wg sync.WaitGroup
-	for range 40 {
+	for _, c := range ups {
 		wg.Go(func() {
-			_, err := s.CreatePending(time.Hour, false, size, "")
+			err := s.AppendChunk(c.ID, 0, c.UploadToken, bytes.NewReader(make([]byte, size)))
 			if err == nil {
 				winners.Add(1)
 			} else if !errors.Is(err, ErrQuota) {
@@ -32,20 +50,60 @@ func TestQuotaReservesWholeUploadsConcurrently(t *testing.T) {
 		})
 	}
 	wg.Wait()
-	if winners.Load() != 3 || s.used != 3*charge {
-		t.Fatalf("accepted %d, charged %d", winners.Load(), s.used)
+	if winners.Load() != 1 || s.used != 4*entryOverhead+size {
+		t.Fatalf("accepted %d chunks, charged %d", winners.Load(), s.used)
+	}
+}
+
+// Publishing charges the discussion space. If it does not fit, the upload
+// stays unfinished and can be published once space frees up.
+func TestQuotaFinalizeNeedsRoomForTheWholePaste(t *testing.T) {
+	full, _ := allocationSize(1000, true)
+	s, err := OpenWithLimits(t.TempDir(), Limits{MaxBytes: full + entryOverhead + 1000 - 1, MaxPending: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	a, err := s.CreatePending(time.Hour, false, 1000, NewToken())
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := s.CreatePending(time.Hour, false, 1000, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []Created{a, b} {
+		if err := s.AppendChunk(c.ID, 0, c.UploadToken, bytes.NewReader(make([]byte, 1000))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.Finalize(a.ID, a.UploadToken); !errors.Is(err, ErrQuota) {
+		t.Fatalf("finalize without room for the discussion: %v", err)
+	}
+	if err := s.Remove(b.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Finalize(a.ID, a.UploadToken); err != nil {
+		t.Fatal(err)
+	}
+	if s.used != full || s.pending != 0 {
+		t.Fatalf("charged %d with %d pending, want %d and 0", s.used, s.pending, full)
 	}
 }
 
 func TestQuotaSurvivesRestartAndStaleUploadSweep(t *testing.T) {
 	dir := t.TempDir()
-	charge, _ := allocationSize(100_000, false)
-	limits := Limits{MaxBytes: charge, MaxPending: 1}
+	limits := Limits{MaxBytes: entryOverhead + 100_000, MaxPending: 1}
 	s, err := OpenWithLimits(dir, limits)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.CreatePending(time.Hour, false, 100_000, ""); err != nil {
+	s.SetMinChunk(1)
+	c, err := s.CreatePending(time.Hour, false, 100_000, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AppendChunk(c.ID, 0, c.UploadToken, bytes.NewReader(make([]byte, 50_000))); err != nil {
 		t.Fatal(err)
 	}
 	s.Close()
@@ -54,7 +112,7 @@ func TestQuotaSurvivesRestartAndStaleUploadSweep(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	if s.used != charge || s.pending != 1 {
+	if s.used != entryOverhead+50_000 || s.pending != 1 {
 		t.Fatalf("lost reservations: %d, %d", s.used, s.pending)
 	}
 	if _, err := s.CreatePending(time.Hour, false, 1, ""); !errors.Is(err, ErrUploadLimit) {
@@ -121,14 +179,14 @@ func TestQuotaIncludesDiscussionsAndPublishedPastesAfterRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s.used != charge {
-		t.Fatal("discussion space was not reserved")
-	}
 	if err := s.AppendChunk(c.ID, 0, c.UploadToken, bytes.NewReader(make([]byte, 1000))); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.Finalize(c.ID, c.UploadToken); err != nil {
 		t.Fatal(err)
+	}
+	if s.used != charge {
+		t.Fatal("discussion space was not reserved")
 	}
 	if _, err := s.AddComment(c.ID, token, make([]byte, MaxCommentBytes)); err != nil {
 		t.Fatal(err)

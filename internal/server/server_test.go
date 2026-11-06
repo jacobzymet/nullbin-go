@@ -584,7 +584,7 @@ func TestRateLimitAndSpoofedForwardedFor(t *testing.T) {
 	body := []byte(`{"expires_in":300,"burn_after_reading":false,"total_size":100}`)
 	createWithXFF := func(e *testEnv, xff string) int {
 		// Test the request limiter alone, not the unfinished-upload cap.
-		e.srv.pending = newPendingTracker(1000, time.Hour)
+		e.srv.pending = newPendingTracker(1000, 1000, time.Hour)
 		hdr := map[string]string{"Content-Type": "application/json"}
 		if xff != "" {
 			hdr["X-Forwarded-For"] = xff

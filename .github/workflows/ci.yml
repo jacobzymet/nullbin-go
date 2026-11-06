@@ -209,7 +209,12 @@ jobs:
           # The configuration is the runner's, private, and root left nothing behind.
           test "$(stat -c '%U %a' .env)" = "$(id -un) 600"
           test -z "$(find .. -user root -print -quit)"
-          VERSION=v0.0.0-ci docker compose up -d --build --wait --wait-timeout 300
+          # Start the way servers set up before v0.2.5 ran: no IPv6 on the
+          # public network and the old MAX_PENDING default. The update step
+          # below must change both.
+          sed -i 's/^MAX_PENDING=1024$/MAX_PENDING=64/' .env
+          NULLBIN_IPV6=false VERSION=v0.0.0-ci docker compose up -d --build --wait --wait-timeout 300
+          test "$(docker network inspect nullbin_frontend --format '{{.EnableIPv6}}')" = false
       - name: Lint the nullbin helper script
         run: shellcheck deploy/nullbin
       - name: Operators can remove a reported paste by ID
@@ -365,6 +370,49 @@ jobs:
           if sudo ./nullbin setup other.example.com; then exit 1; fi  # already configured
           sudo ./nullbin cleanup
           curl -fsSk https://localhost/api/v1/version | grep -q '"version":"v9.9.9"'  # still running
+          # The update raised the old default and kept the file private.
+          grep -qx 'MAX_PENDING=1024' .env
+          test "$(stat -c '%U %a' .env)" = "$(id -un) 600"
+          test "$(docker network inspect nullbin_frontend --format '{{.EnableIPv6}}')" = true
+      - name: IPv6 visitors keep their own address
+        run: |
+          set -x
+          # A host address that is not loopback, as a visitor's would be.
+          sudo ip link add nbtest6 type dummy
+          sudo ip link set nbtest6 up
+          sudo ip -6 addr add fd00:6e62::1/64 dev nbtest6 nodad
+          cat > "$RUNNER_TEMP/peer.py" <<'PY'
+          import http.server, socket
+          class Handler(http.server.BaseHTTPRequestHandler):
+              def do_GET(self):
+                  self.send_response(200)
+                  self.end_headers()
+                  self.wfile.write(self.client_address[0].encode())
+          class Server6(http.server.HTTPServer):
+              address_family = socket.AF_INET6
+          try:
+              Server6(('::', 8080), Handler).serve_forever()
+          except OSError:  # a container without IPv6
+              http.server.HTTPServer(('0.0.0.0', 8080), Handler).serve_forever()
+          PY
+          # A probe on Nullbin's public network reports the client address it
+          # sees, as Caddy would. Another on an IPv4-only network shows what
+          # Nullbin saw before (for comparison only).
+          docker run -d --name peer --network nullbin_frontend -p 8099:8080 \
+            -v "$RUNNER_TEMP/peer.py:/peer.py:ro" python:3.13-alpine python /peer.py
+          docker network create nbtest-v4only
+          docker run -d --name peer4 --network nbtest-v4only -p 8098:8080 \
+            -v "$RUNNER_TEMP/peer.py:/peer.py:ro" python:3.13-alpine python /peer.py
+          for i in $(seq 1 30); do
+            curl -s -6 -o /dev/null 'http://[fd00:6e62::1]:8099/' && break
+            sleep 1
+          done
+          echo "IPv4-only network sees: $(curl -s -6 'http://[fd00:6e62::1]:8098/')"
+          seen=$(curl -fsS -6 'http://[fd00:6e62::1]:8099/')
+          echo "Nullbin's network sees: $seen"
+          test "$seen" = fd00:6e62::1
+          docker rm -f peer peer4
+          docker network rm nbtest-v4only
       - name: Logs
         if: always()
         working-directory: deploy

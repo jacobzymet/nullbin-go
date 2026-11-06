@@ -29,8 +29,8 @@ const (
 	// one frame (4-byte length and 17-byte authentication overhead).
 	MinBlobSize = 46 + 4 + 17
 
-	maxCreateBody = 1 << 10 // bounded create JSON, including tokens and max_reads
-	maxChunkBody  = 8 << 20 // one upload chunk (the browser sends 4 MiB)
+	maxCreateBody = 1 << 10               // bounded create JSON, including tokens and max_reads
+	maxChunkBody  = storage.MaxChunkBytes // one upload chunk (the browser sends 4 MiB)
 	maxChunkIndex = 1<<31 - 1
 )
 
@@ -56,6 +56,7 @@ const (
 	downloadSlotsPerClient = 16
 	downloadSlotsPerSite   = 64       // per IPv6 /48
 	pendingPerClient       = 8        // unfinished uploads per client network
+	pendingPerSite         = 32       // unfinished uploads per IPv6 /48
 	downloadMinRate        = 32 << 10 // bytes per second
 )
 
@@ -130,7 +131,7 @@ func New(cfg Config) *Server {
 		globalBytes:   newLimiter(globalBytesPerSecond, globalBytesPerSecond, 1),
 		chunkSlots:    newSlotPool(chunkSlotsTotal, chunkSlotsPerClient, chunkSlotsPerSite),
 		downloadSlots: newSlotPool(downloadSlotsTotal, downloadSlotsPerClient, downloadSlotsPerSite),
-		pending:       newPendingTracker(pendingPerClient, storage.PendingTTL),
+		pending:       newPendingTracker(pendingPerClient, pendingPerSite, storage.PendingTTL),
 		logger:        cfg.Logger,
 		nowFunc:       time.Now,
 
@@ -449,6 +450,8 @@ func (s *Server) handleChunk(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "empty chunk")
 	case errors.Is(err, storage.ErrChunkTooSmall):
 		writeError(w, http.StatusBadRequest, "chunk too small: every chunk but the last must be at least 4 MiB")
+	case errors.Is(err, storage.ErrQuota):
+		writeError(w, http.StatusInsufficientStorage, "storage capacity reached")
 	case errors.Is(body.err, errTooSlow), errors.Is(body.err, os.ErrDeadlineExceeded):
 		writeError(w, http.StatusRequestTimeout, "upload too slow")
 	case body.err != nil:
@@ -475,6 +478,8 @@ func (s *Server) handleFinalize(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "upload busy")
 	case errors.Is(err, storage.ErrIncomplete):
 		writeError(w, http.StatusBadRequest, "upload incomplete")
+	case errors.Is(err, storage.ErrQuota):
+		writeError(w, http.StatusInsufficientStorage, "storage capacity reached")
 	default:
 		s.internalError(w, "finalize", err)
 	}

@@ -35,7 +35,7 @@ services:
       NULLBIN_TRUSTED_PROXIES: "172.30.53.10"
       NULLBIN_MAX_SIZE: ${MAX_SIZE:-100MiB}
       NULLBIN_MAX_STORAGE: ${MAX_STORAGE:-10GiB}
-      NULLBIN_MAX_PENDING: ${MAX_PENDING:-64}
+      NULLBIN_MAX_PENDING: ${MAX_PENDING:-1024}
     volumes:
       - nullbin-data:/data
     networks:
@@ -84,7 +84,12 @@ services:
       options: { max-size: "10m", max-file: "3" }
 
 networks:
-  frontend: {}
+  # IPv6 here lets Docker forward IPv6 visitors directly, so each keeps its
+  # own address and rate limits. Without it Docker relays them through a
+  # proxy and they all appear to come from one internal address. ./nullbin
+  # turns it off on servers whose kernel has IPv6 disabled.
+  frontend:
+    enable_ipv6: ${NULLBIN_IPV6:-true}
   backend:
     internal: true
     ipam:

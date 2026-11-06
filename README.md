@@ -334,7 +334,7 @@ change with `sudo ./nullbin start`.
 |---|---|---|
 | `MAX_SIZE` | `100MiB` | Largest paste, including its attachment. Up to `2GiB`. |
 | `MAX_STORAGE` | `10GiB` | Total space Nullbin may use. Keep it well below the disk's free space. |
-| `MAX_PENDING` | `64` | How many uploads can be in progress at once. |
+| `MAX_PENDING` | `1024` | How many uploads can be in progress at once. |
 | `DOMAIN` (A) or `API_DOMAIN` (B) | set by `setup` | The server's domain name. |
 | `FRONTEND_ORIGIN` (B only) | set by `setup-api` | The website's exact address. |
 
@@ -549,7 +549,7 @@ startup.
 | `NULLBIN_LISTEN_ADDR` | `127.0.0.1:8080` (`:8080` in the image) | Address and port to listen on. |
 | `NULLBIN_DATA_DIR` | `data` (`/data` in the image) | Data directory, created with mode `0700`. |
 | `NULLBIN_MAX_STORAGE` | `10GiB` | Total storage budget (`64KiB` to 1 PiB), including unfinished uploads, metadata and discussion space. |
-| `NULLBIN_MAX_PENDING` | `64` | Unfinished uploads at once (1 to 4096). |
+| `NULLBIN_MAX_PENDING` | `1024` | Unfinished uploads at once (1 to 4096). |
 | `NULLBIN_MAX_SIZE` | `100MiB` | Largest paste, `64KiB` to `2GiB`. |
 | `NULLBIN_BEHIND_HTTPS` | `false` | `true` sends `Strict-Transport-Security: max-age=31536000`. |
 | `NULLBIN_TRUSTED_PROXIES` | empty | IPs or CIDR ranges whose `X-Forwarded-For` header is trusted. |
@@ -576,7 +576,7 @@ Forwarded addresses are trusted only from `NULLBIN_TRUSTED_PROXIES`.
 | Limit | Value |
 |---|---|
 | Unfinished upload lifetime | 2 minutes without a completed chunk; 1 hour at most |
-| Unfinished uploads per client | 8, within `MAX_PENDING` |
+| Unfinished uploads | `MAX_PENDING` in total; 8 per client and 32 per IPv6 `/48` |
 | Upload chunk size | 4 MiB to 8 MiB, except the last chunk |
 | Concurrent chunk uploads | 128 in total; 4 per client and 16 per IPv6 `/48` |
 | Minimum upload rate | 16 KiB/s on average after 15 seconds |
@@ -586,8 +586,11 @@ Forwarded addresses are trusted only from `NULLBIN_TRUSTED_PROXIES`.
 | Request size | 1 KiB to create a paste; 16 KiB of headers |
 | Timeouts | 10 s for headers, 60 s idle, 30 s for other requests, 5 minutes per upload chunk |
 
-Storage is reserved in full, plus 32 KiB, when an upload starts, and
-discussions reserve room for 200 comments. A full budget returns `507`; too
+An upload is charged 32 KiB when it starts and its bytes as they arrive,
+so uploads that send nothing cannot fill the budget. It starts only if the
+whole paste fits at that moment, but other uploads can take the space
+before it finishes. Publishing charges the rest, including room for 200
+comments when the paste has a discussion. A full budget returns `507`; too
 many uploads or transfers return `503` with `Retry-After`. This is
 Nullbin's own budget, not a disk quota: leave free disk space, or use a
 dedicated volume.

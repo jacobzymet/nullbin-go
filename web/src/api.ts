@@ -97,7 +97,8 @@ export async function putChunk(id: string, n: number, uploadToken: string, data:
       if (err.body['next_chunk'] !== undefined || attempt >= 3) throw err;
       busy = true; // another request for this upload is still running
     }
-    const retryable = busy || resp === null || resp.status === 429 || resp.status >= 500;
+    // A full server (507) stays full for longer than the retries take.
+    const retryable = busy || resp === null || resp.status === 429 || (resp.status >= 500 && resp.status !== 507);
     if (!retryable || attempt >= 3) throw resp ? await errorFrom(resp) : new Error('Upload failed.');
     const after = Number(resp?.headers.get('Retry-After'));
     await sleep(Number.isFinite(after) && after > 0 ? Math.min(after, 30) * 1000 : 1000 * 2 ** attempt);

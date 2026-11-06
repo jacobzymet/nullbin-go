@@ -15,7 +15,7 @@ func TestConfigDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.ListenAddr != "127.0.0.1:8080" || cfg.DataDir != "data" || cfg.MaxSize != 100<<20 || cfg.MaxStorage != 10<<30 || cfg.MaxPending != 64 || cfg.BehindHTTPS || len(cfg.TrustedProxies) != 0 {
+	if cfg.ListenAddr != "127.0.0.1:8080" || cfg.DataDir != "data" || cfg.MaxSize != 100<<20 || cfg.MaxStorage != 10<<30 || cfg.MaxPending != 1024 || cfg.BehindHTTPS || len(cfg.TrustedProxies) != 0 {
 		t.Fatalf("defaults %+v", cfg)
 	}
 }
