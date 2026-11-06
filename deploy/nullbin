@@ -14,8 +14,11 @@
 #   sudo ./nullbin cleanup          free disk space used by old builds
 #
 # Option A uses deploy/.env and Option B deploy/.env.api; every command picks
-# the right one. Git runs as the owner of the checkout, so sudo never leaves
-# root-owned files behind.
+# the right one. Git and all file changes run as the owner of the checkout,
+# so sudo never leaves root-owned files behind.
+#
+# Whoever can change this checkout controls what runs as root here, as with
+# any Docker Compose setup: keep it owned and writable by you alone.
 set -euo pipefail
 
 # Everything runs inside main, which bash reads completely before running:
@@ -34,15 +37,19 @@ main() {
   [[ $EUID -eq 0 ]] || die "run it with sudo: sudo ./nullbin $cmd $*"
   [[ -d $repo/.git ]] || die "$repo is not a Git checkout of Nullbin"
 
-  # Git as the checkout's owner, so files it writes stay theirs.
+  # Runs a command as the checkout's owner. Every file this script reads,
+  # creates or changes inside the checkout goes through it: as root, a link
+  # planted there could redirect the operation to a system file. Git runs
+  # this way too, so the files it writes stay the owner's.
   owner=$(stat -c %U -- "$repo/.git")
-  g() {
+  as_owner() {
     if [[ $owner == root ]]; then
-      git -C "$repo" "$@"
+      "$@"
     else
-      sudo -u "$owner" -- git -C "$repo" "$@"
+      sudo -u "$owner" -- "$@"
     fi
   }
+  g() { as_owner git -C "$repo" "$@"; }
 
   # Which layout: Option A (.env) or Option B (.env.api).
   local -a compose=()
@@ -65,15 +72,10 @@ main() {
     [[ ${#d} -le 253 && $d =~ ^([a-z0-9]([a-z0-9-]*[a-z0-9])?[.])+[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]]
   }
 
-  # Writes a configuration file from its example, replacing whole lines that
-  # start with a setting's name. The file belongs to the checkout's owner.
-  write_config() {
-    local example=$1 target=$2
-    shift 2
-    [[ ! -e $deploy/.env && ! -e $deploy/.env.api ]] ||
-      die "already configured: edit deploy/.env or deploy/.env.api, or delete it to start over"
-    local tmp line setting found
-    tmp=$(mktemp "$deploy/.config.XXXXXX")
+  # Copies standard input to standard output, replacing whole lines that
+  # start with a setting's name (such as DOMAIN=) by that setting.
+  render_config() {
+    local line setting
     while IFS= read -r line || [[ -n $line ]]; do
       for setting in "$@"; do
         if [[ $line == "${setting%%=*}="* ]]; then
@@ -81,14 +83,29 @@ main() {
         fi
       done
       printf '%s\n' "$line"
-    done <"$deploy/$example" >"$tmp"
-    for setting in "$@"; do
-      found=$(grep -c -F -x -- "$setting" "$tmp" || true)
-      [[ $found -eq 1 ]] || { rm -f -- "$tmp"; die "could not set ${setting%%=*} in $example"; }
     done
-    chmod 600 -- "$tmp"
-    chown -- "$owner" "$tmp"
-    mv -- "$tmp" "$deploy/$target"
+  }
+
+  # Writes a configuration file from its example with the given settings.
+  # The file belongs to the checkout's owner and only they can read it.
+  write_config() {
+    local example=$1 target=$2
+    shift 2
+    [[ ! -e $deploy/.env && ! -e $deploy/.env.api ]] ||
+      die "already configured: edit deploy/.env or deploy/.env.api, or delete it to start over"
+    local tmp setting found
+    # Only the text passes through root; every file operation is the owner's.
+    tmp=$(as_owner mktemp "$deploy/.config.XXXXXX")
+    if ! as_owner cat -- "$deploy/$example" | render_config "$@" | as_owner tee -- "$tmp" >/dev/null; then
+      as_owner rm -f -- "$tmp"
+      die "could not read $example"
+    fi
+    for setting in "$@"; do
+      found=$(as_owner grep -c -F -x -- "$setting" "$tmp" || true)
+      [[ $found -eq 1 ]] || { as_owner rm -f -- "$tmp"; die "could not set ${setting%%=*} in $example"; }
+    done
+    as_owner chmod 600 -- "$tmp"
+    as_owner mv -- "$tmp" "$deploy/$target"
     echo "Wrote deploy/$target. To change settings later, edit it and run: sudo ./nullbin start"
   }
 
@@ -160,7 +177,9 @@ main() {
       [[ $target =~ ^v[0-9]+[.][0-9]+[.][0-9]+$ ]] || die "not a release version: $target (expected something like v1.2.3)"
       echo "Installed: $current"
       echo "Target:    $target"
-      g fetch --quiet --tags origin || echo "Could not reach GitHub; using releases already downloaded."
+      # Git refuses to move a release tag that already exists here, so a tag
+      # changed on GitHub after release is never followed.
+      g fetch --quiet --tags origin || echo "Could not fetch new releases (see the message above); using releases already downloaded."
       g rev-parse --quiet --verify "refs/tags/$target^{commit}" >/dev/null || die "release $target was not found"
       changes=$(g status --porcelain --untracked-files=no)
       [[ -z $changes ]] || die "files that came with Nullbin were edited, so the update would overwrite them:
@@ -177,7 +196,9 @@ Set them aside with: git -C $repo stash"
       ;;
     logs)
       layout
-      "${compose[@]}" logs --tail "${1:-100}"
+      local lines=${1:-100}
+      [[ $lines =~ ^[0-9]{1,6}$ ]] || die "give a number of lines, such as: sudo ./nullbin logs 200"
+      "${compose[@]}" logs --tail "$lines"
       ;;
     stop)
       layout

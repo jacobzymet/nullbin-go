@@ -477,9 +477,12 @@ address:
    promptly. The cloud-init setup also installs Ubuntu updates
    automatically; on other servers, turn on `unattended-upgrades`.
 2. **Protect the accounts that control it.** Use SSH keys rather than
-   passwords for the server. With Option B, also protect the static host
-   account that publishes the frontend: whoever controls it controls the
-   code that handles keys.
+   passwords for the server, and keep the `nullbin` folder owned and
+   writable by you alone: whoever can change it controls what runs as root,
+   as with any Docker setup. Turn on two-factor authentication for the
+   GitHub account that publishes releases. With Option B, also protect the
+   static host account that publishes the frontend: whoever controls it
+   controls the code that handles keys.
 3. **Publish a way to report abuse,** such as an email address on your
    domain. You cannot see what pastes contain, so reports are how you
    learn about illegal content. The **Report a vulnerability** link at the

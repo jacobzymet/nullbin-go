@@ -198,7 +198,17 @@ jobs:
       - name: Start deploy/compose.yaml exactly as a user would (DOMAIN=localhost)
         working-directory: deploy
         run: |
+          # A link planted in the checkout must not make root read or change a
+          # system file: setup fails cleanly and writes nothing.
+          mv env.example env.example.real && ln -s /etc/shadow env.example
+          if sudo ./nullbin setup localhost; then exit 1; fi
+          test ! -e .env
+          if ls -a | grep -q '^[.]config'; then exit 1; fi
+          rm env.example && mv env.example.real env.example
           sudo ./nullbin setup localhost
+          # The configuration is the runner's, private, and root left nothing behind.
+          test "$(stat -c '%U %a' .env)" = "$(id -un) 600"
+          test -z "$(find .. -user root -print -quit)"
           VERSION=v0.0.0-ci docker compose up -d --build --wait --wait-timeout 300
       - name: Lint the nullbin helper script
         run: shellcheck deploy/nullbin
