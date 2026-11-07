@@ -14,7 +14,7 @@ const hidden = new Set([
   0x2060, 0x2066, 0x2067, 0x2068, 0x2069, 0xfeff,
 ]);
 const skipDirs = new Set(['node_modules', '.git', 'dist', 'generated', 'out', 'data', 'testdata']);
-const textFile = /\.(ts|mjs|js|go|html|css|md|ya?ml|json|txt|example)$|^(Dockerfile|Caddyfile.*|LICENSE|THIRD_PARTY_NOTICES|CODEOWNERS|nullbin|go\.mod|\.[a-z]+)$/;
+const textFile = /\.(ts|mjs|js|go|html|css|md|ya?ml|json|txt|example|caddy)$|^(Dockerfile|Caddyfile.*|LICENSE|THIRD_PARTY_NOTICES|CODEOWNERS|nullbin|go\.mod|\.[a-z]+)$/;
 
 function* files(dir: string): Generator<string> {
   for (const name of readdirSync(dir)) {

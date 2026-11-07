@@ -2,6 +2,12 @@
 # automatically (Let's Encrypt or ZeroSSL) once DOMAIN points at this server.
 # Access logging is off (Caddy's default without a `log` directive): URLs
 # contain paste IDs.
+
+# Direct (CLOUDFLARE=false) or behind Cloudflare's proxy (CLOUDFLARE=true):
+# which proxies may name the visitor's address, and how certificates are
+# obtained. See caddy/cloudflare-*.caddy.
+import /etc/caddy/nullbin/cloudflare-{$CLOUDFLARE:false}.caddy
+
 {
 	# No admin API; restart the container to reload this file.
 	admin off
@@ -14,6 +20,7 @@
 		timeouts {
 			read_header 10s
 		}
+		import edge-servers
 	}
 	# Never try to add Caddy's local test CA to the container's trust store.
 	skip_install_trust
@@ -38,6 +45,7 @@
 	root * /srv
 	import /etc/caddy/headers.caddy
 	header -Server
+	import edge-site
 
 	# API responses cannot become executable pages on the frontend origin,
 	# even if the API process is compromised. Only /api/v1/ reaches it.
@@ -46,6 +54,10 @@
 			max_size 9MB
 		}
 		reverse_proxy 172.30.53.20:8080 {
+			# Exactly one address: the visitor's, as Caddy determined it. Nullbin
+			# trusts this header only from Caddy, so nothing a client or another
+			# proxy adds can reach it.
+			header_up X-Forwarded-For {client_ip}
 			header_down Content-Security-Policy "default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; sandbox"
 			header_down X-Content-Type-Options nosniff
 			header_down -Service-Worker-Allowed

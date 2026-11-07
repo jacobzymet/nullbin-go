@@ -1,0 +1,11 @@
+# Direct mode (CLOUDFLARE=false, the default): visitors connect to this
+# server themselves. Imported by Caddyfile and Caddyfile.api.
+#
+# No proxy is trusted: the visitor's address is the connection's address,
+# and certificates come from Let's Encrypt (or ZeroSSL) as usual.
+
+(edge-servers) {
+}
+
+(edge-site) {
+}

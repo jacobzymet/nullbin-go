@@ -65,11 +65,14 @@ services:
     pids_limit: 1024
     environment:
       DOMAIN: ${API_DOMAIN:?Set API_DOMAIN in deploy/.env.api}
+      # true only when Cloudflare's proxy is in front (README: Behind Cloudflare).
+      CLOUDFLARE: ${CLOUDFLARE:-false}
     ports:
       - "80:80"
       - "443:443"
     volumes:
       - ./Caddyfile.api:/etc/caddy/Caddyfile:ro
+      - ./caddy:/etc/caddy/nullbin:ro
       - proxy-data:/data
       - proxy-config:/config
     tmpfs:

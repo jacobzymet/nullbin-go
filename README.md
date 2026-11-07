@@ -123,6 +123,8 @@ server is ever compromised: the code that handles keys is not on it.
   server.
 - TCP ports **80 and 443** open in the server's firewall and in your
   hosting provider's firewall.
+- Optional: **Cloudflare's proxy** in front of the server. See
+  [Behind Cloudflare](#behind-cloudflare).
 
 **Servers always run a published release**, never the development branch:
 the install steps download the latest release, and Docker builds it on your
@@ -156,6 +158,10 @@ a "detached HEAD" is normal.
 ```bash
 sudo ./nullbin setup paste.example.com
 ```
+
+If Cloudflare's proxy (orange cloud) will be in front of the server, add
+`--cloudflare` to that command and read
+[Behind Cloudflare](#behind-cloudflare) first.
 
 **3. Start Nullbin.** The first start takes a few minutes:
 
@@ -278,6 +284,8 @@ Option A and Option B.
 | Stop | `sudo ./nullbin stop` |
 | Start | `sudo ./nullbin start` |
 | Remove a reported paste | `sudo ./nullbin delete <paste id>` |
+| Turn Cloudflare mode on or off | `sudo ./nullbin cloudflare on` (or `off`) |
+| Show Cloudflare mode, the certificate and the SSL setting to use | `sudo ./nullbin cloudflare` |
 | Free disk space used by old builds | `sudo ./nullbin cleanup` |
 | List every command | `./nullbin help` |
 
@@ -346,6 +354,7 @@ change with `sudo ./nullbin start`.
 | `MAX_PASTES` | `100000` | Most pastes kept at once. Each uses about four inodes; check with `df -i` before raising it. |
 | `DOMAIN` (A) or `API_DOMAIN` (B) | set by `setup` | The server's domain name. |
 | `FRONTEND_ORIGIN` (B only) | set by `setup-api` | The website's exact address. |
+| `CLOUDFLARE` | not set (off) | `true` when Cloudflare's proxy is in front. Change it with `sudo ./nullbin cloudflare on` or `off`, not by hand. See [Behind Cloudflare](#behind-cloudflare). |
 
 Write each setting on its own line as `NAME=value`, with no quotes or
 spaces. `./nullbin` refuses to start with anything else (other forms that
@@ -356,6 +365,68 @@ configuration.
 If you change the **API's address** in Option B, also rebuild and upload
 the website with the new address. If you change the **website's address**,
 existing share links keep pointing at the old one.
+
+### Behind Cloudflare
+
+Use Cloudflare mode when Cloudflare's proxy (the orange cloud) is in front
+of your server, in Option A or Option B.
+
+**1. Turn it on**, on the server:
+
+```bash
+sudo ./nullbin cloudflare on
+```
+
+(Or add `--cloudflare` to `setup` or `setup-api` when you first set up.)
+`sudo ./nullbin cloudflare off` turns it off again.
+
+**2. In Cloudflare's dashboard:**
+
+- **DNS:** the record for your domain points at the server and is
+  **Proxied** (orange cloud).
+- **SSL/TLS → Overview:** run `sudo ./nullbin cloudflare`. It says which
+  mode to use:
+  - **Full (strict)** once the server has a Let's Encrypt certificate. This
+    is the one to aim for: Cloudflare then checks that it is really talking
+    to your server.
+  - **Full** while the server uses its own certificate (see below). It is
+    encrypted, but Cloudflare does not check who answers.
+  - Never **Flexible**: it would send everything unencrypted between
+    Cloudflare and your server.
+- **Turn off features that rewrite pages:** Rocket Loader, Email Address
+  Obfuscation and automatic Web Analytics injection. Nullbin's security
+  checks block such changes, so they would break the page.
+
+**What Cloudflare mode does:**
+
+- **Only Cloudflare can reach the site.** Any other connection gets
+  `403 This site is served only through Cloudflare.`. This is enforced by
+  Nullbin's own proxy, so it holds even though Docker's published ports skip
+  host firewalls such as ufw. Keep **port 80 open to Cloudflare**: Let's
+  Encrypt checks your domain through it.
+- **Each visitor keeps their own rate limits.** Behind Cloudflare, every
+  connection comes from Cloudflare's addresses. Nullbin uses the visitor's
+  address that Cloudflare reports in `CF-Connecting-IP`, and believes that
+  header only on connections from Cloudflare's published addresses
+  ([list](https://www.cloudflare.com/ips/)). Nobody else can fake it.
+- **Certificates:** the server asks Let's Encrypt for a certificate first.
+  If that fails, it uses a certificate from its own local authority right
+  away, so the site works with Cloudflare's **Full** mode. It tries Let's
+  Encrypt again about every 40 minutes and switches over once it succeeds.
+  Visitors only ever see Cloudflare's certificate.
+
+**What Cloudflare can see:** Cloudflare decrypts the traffic between
+visitors and your server. It sees visitors' addresses, paste IDs, access
+tokens and encrypted pastes, but never paste contents, passwords or keys:
+those stay in the browser, and the key is never sent over the network. In
+Option A, Cloudflare also delivers the website's code, so you trust it as
+much as your own server not to change that code. In Option B, with only the
+API behind Cloudflare, it never delivers code.
+
+Cloudflare's address list is built into Nullbin and checked against
+Cloudflare's published one on every change. If Cloudflare adds addresses,
+a Nullbin update brings them; until then, visitors routed through the new
+addresses are refused rather than trusted.
 
 ### Before you go public
 
@@ -407,6 +478,9 @@ snapshots may keep copies.
 |---|---|
 | The install prints only `Installing`, or `nullbin update` cannot find the latest release | The server could not reach GitHub, or no release exists yet. Check the [Releases page](https://github.com/jacobzymet/nullbin-go/releases) and try again. Do not continue without a version. |
 | The site does not open, or HTTPS is not ready | Check that DNS points at the right server and ports 80 and 443 are open in both firewalls. Then check `sudo ./nullbin status` and `sudo ./nullbin logs`. |
+| The site says "This site is served only through Cloudflare." | Cloudflare mode is on, but visitors reach the server directly. Set the DNS record to **Proxied** in Cloudflare, or turn the mode off with `sudo ./nullbin cloudflare off`. |
+| Cloudflare shows error 526 (invalid SSL certificate) | The server is using its own certificate while Cloudflare is set to **Full (strict)**. Run `sudo ./nullbin cloudflare` and set the mode it shows. |
+| Cloudflare shows error 521 or 522 | Cloudflare cannot connect to the server. Check that ports 80 and 443 are open to Cloudflare in your hosting provider's firewall, and `sudo ./nullbin status`. |
 | Option B: the API's home page shows "Not found" | That is expected. Check `https://api.example.com/api/v1/version` instead. |
 | Option B: the website opens, but creating or opening pastes fails | The website's address must exactly match the one given to `setup-api`, and the website must be built with the API's address. Fix whichever is wrong, then rebuild or restart. |
 | A share link opens the host's "page not found" | Upload the whole output folder, including `_redirects`. |

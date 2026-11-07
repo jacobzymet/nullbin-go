@@ -4,6 +4,9 @@
 #   sudo ./nullbin setup paste.example.com    configure the one-server layout
 #   sudo ./nullbin setup-api api.example.com https://paste.example.com
 #                                             configure the separate-API layout
+#        (add --cloudflare to either when Cloudflare's proxy is in front)
+#   sudo ./nullbin cloudflare on    Cloudflare's proxy is in front (off: it is not)
+#   sudo ./nullbin cloudflare       Cloudflare mode and certificate status
 #   sudo ./nullbin start            build and start the installed release
 #   sudo ./nullbin update           update to the latest release
 #   sudo ./nullbin update v1.2.3    switch to a specific release (or back to one)
@@ -61,6 +64,8 @@ main() {
   # Which layout: Option A (.env) or Option B (.env.api).
   local -a compose=()
   local config=
+  # The checked settings, filled by check_config.
+  local -A settings=()
   layout() {
     if [[ -f $deploy/.env && -f $deploy/.env.api ]]; then
       die "both deploy/.env and deploy/.env.api exist; remove the one you do not use"
@@ -75,7 +80,7 @@ main() {
     fi
     # Settings come only from the checked file, never from this shell, and
     # the project is always "nullbin", whatever the environment says.
-    compose=(env -u DOMAIN -u API_DOMAIN -u FRONTEND_ORIGIN -u COMPOSE_PROJECT_NAME -u COMPOSE_FILE
+    compose=(env -u DOMAIN -u API_DOMAIN -u FRONTEND_ORIGIN -u CLOUDFLARE -u COMPOSE_PROJECT_NAME -u COMPOSE_FILE
       -u COMPOSE_ENV_FILES -u COMPOSE_PROFILES "NULLBIN_IPV6=$ipv6" "${compose[@]}" -p nullbin)
     # Stopping always works, even with a broken settings file.
     [[ $cmd == stop ]] || check_config
@@ -112,9 +117,9 @@ main() {
     local allowed line name
     local -A value=()
     if [[ $config == .env ]]; then
-      allowed=" DOMAIN MAX_SIZE MAX_STORAGE MAX_PENDING MAX_PASTES "
+      allowed=" DOMAIN CLOUDFLARE MAX_SIZE MAX_STORAGE MAX_PENDING MAX_PASTES "
     else
-      allowed=" API_DOMAIN FRONTEND_ORIGIN MAX_SIZE MAX_STORAGE MAX_PENDING MAX_PASTES "
+      allowed=" API_DOMAIN FRONTEND_ORIGIN CLOUDFLARE MAX_SIZE MAX_STORAGE MAX_PENDING MAX_PASTES "
     fi
     while IFS= read -r line || [[ -n $line ]]; do
       [[ $line == *[[:cntrl:]]* ]] &&
@@ -133,6 +138,72 @@ main() {
       valid_domain "${value[API_DOMAIN]:-}" || die "API_DOMAIN in deploy/.env.api is not a lowercase domain name such as api.example.com"
       valid_origin "${value[FRONTEND_ORIGIN]:-}" || die "FRONTEND_ORIGIN in deploy/.env.api is not an address such as https://paste.example.com"
     fi
+    # It picks a file of the proxy's configuration by name.
+    [[ ${value[CLOUDFLARE]:-false} =~ ^(true|false)$ ]] ||
+      die "CLOUDFLARE in deploy/$config must be true or false. Change it with: sudo ./nullbin cloudflare on (or off)"
+    for name in "${!value[@]}"; do settings[$name]=${value[$name]}; done
+  }
+
+  # Sets one setting in the configuration file, replacing its line or
+  # adding one, or removes it when the value is empty (NAME=). The file is
+  # rewritten by its owner, like every other file change.
+  set_setting() {
+    local setting=$1 name=${1%%=*} tmp line
+    tmp=$(as_owner mktemp "$deploy/.config.XXXXXX")
+    if ! as_owner cat -- "$deploy/$config" | while IFS= read -r line || [[ -n $line ]]; do
+           if [[ $line == "$name="* ]]; then
+             [[ $setting == "$name=" ]] || printf '%s\n' "$setting"
+           else
+             printf '%s\n' "$line"
+           fi
+         done | as_owner tee -- "$tmp" >/dev/null; then
+      as_owner rm -f -- "$tmp"
+      die "could not update deploy/$config"
+    fi
+    if [[ $setting != "$name=" ]] && ! as_owner grep -q -x -F -- "$setting" "$tmp"; then
+      printf '%s\n' "$setting" | as_owner tee -a -- "$tmp" >/dev/null
+    fi
+    as_owner chmod 600 -- "$tmp"
+    as_owner mv -- "$tmp" "$deploy/$config"
+  }
+
+  # The domain this server's proxy answers for.
+  site_domain() {
+    if [[ $config == .env ]]; then echo "${settings[DOMAIN]}"; else echo "${settings[API_DOMAIN]}"; fi
+  }
+
+  # Who issued the certificate the proxy presents right now.
+  certificate_issuer() {
+    local issuer
+    command -v openssl >/dev/null || { echo "unknown (openssl is not installed)"; return; }
+    issuer=$(timeout 10 openssl s_client -connect 127.0.0.1:443 -servername "$(site_domain)" </dev/null 2>/dev/null |
+      openssl x509 -noout -issuer 2>/dev/null || true)
+    case $issuer in
+      "") echo "none yet (is Nullbin running? It can take a minute after starting)" ;;
+      *"Caddy Local Authority"*) echo "Caddy's own (Let's Encrypt has not issued one yet)" ;;
+      *"Let's Encrypt"*) echo "Let's Encrypt" ;;
+      *) echo "${issuer#issuer=}" ;;
+    esac
+  }
+
+  # What to set in Cloudflare's dashboard, given the certificate in use.
+  cloudflare_status() {
+    local issuer
+    if [[ ${settings[CLOUDFLARE]:-false} != true ]]; then
+      echo "Cloudflare mode: off. Visitors connect to this server directly."
+      echo "If Cloudflare's proxy (orange cloud) is in front, run: sudo ./nullbin cloudflare on"
+      return
+    fi
+    issuer=$(certificate_issuer)
+    echo "Cloudflare mode: on. Only connections from Cloudflare's addresses are answered."
+    echo "Certificate:     $issuer"
+    case $issuer in
+      "Let's Encrypt") echo "In Cloudflare, set SSL/TLS encryption to: Full (strict)" ;;
+      "Caddy's own"*)
+        echo "In Cloudflare, set SSL/TLS encryption to: Full (not Full (strict), until Let's Encrypt issues one)"
+        echo "Caddy tries Let's Encrypt again about every 40 minutes; it needs this server's port 80 open"
+        echo "to Cloudflare. Check again later with: sudo ./nullbin cloudflare" ;;
+    esac
   }
 
   # Copies standard input to standard output, replacing whole lines that
@@ -163,6 +234,13 @@ main() {
       as_owner rm -f -- "$tmp"
       die "could not read $example"
     fi
+    # Settings the example only describes in a comment (such as CLOUDFLARE)
+    # are added at the end.
+    for setting in "$@"; do
+      if ! as_owner grep -q -- "^${setting%%=*}=" "$tmp"; then
+        printf '%s\n' "$setting" | as_owner tee -a -- "$tmp" >/dev/null
+      fi
+    done
     for setting in "$@"; do
       found=$(as_owner grep -c -F -x -- "$setting" "$tmp" || true)
       [[ $found -eq 1 ]] || { as_owner rm -f -- "$tmp"; die "could not set ${setting%%=*} in $example"; }
@@ -210,6 +288,9 @@ $changes" >&2
     echo "Building and starting Nullbin $version. The first build takes a few minutes."
     VERSION=$version "${compose[@]}" up -d --build --remove-orphans --wait --wait-timeout 600
     echo "Nullbin $version is running."
+    if [[ ${settings[CLOUDFLARE]:-false} == true && $cmd != cloudflare ]]; then
+      echo "Cloudflare mode is on. For its certificate and Cloudflare's SSL setting, run: sudo ./nullbin cloudflare"
+    fi
   }
 
   # owner/name of the GitHub repository this checkout came from.
@@ -241,23 +322,75 @@ $changes" >&2
 
   case $cmd in
     setup)
-      local domain=${1:-}
+      local domain=${1:-} cloudflare=()
       domain=${domain,,}
       valid_domain "$domain" ||
         die "give your domain name only, such as: sudo ./nullbin setup paste.example.com (no https:// and no slash)"
-      write_config env.example .env "DOMAIN=$domain"
-      echo "Next: point $domain at this server, then run: sudo ./nullbin start"
+      case $# in
+        1) ;;
+        2) [[ $2 == --cloudflare ]] || die "unknown option $2 (did you mean --cloudflare?)"; cloudflare=(CLOUDFLARE=true) ;;
+        *) die "usage: sudo ./nullbin setup paste.example.com [--cloudflare]" ;;
+      esac
+      write_config env.example .env "DOMAIN=$domain" "${cloudflare[@]}"
+      if [[ ${#cloudflare[@]} -gt 0 ]]; then
+        echo "Cloudflare mode is on. Next: in Cloudflare, add a proxied (orange cloud) DNS record for $domain"
+        echo "pointing at this server, then run: sudo ./nullbin start"
+      else
+        echo "Next: point $domain at this server, then run: sudo ./nullbin start"
+      fi
       ;;
     setup-api)
-      local api=${1:-} origin=${2:-}
+      local api=${1:-} origin=${2:-} cloudflare=()
       api=${api,,}
       origin=${origin,,}
       valid_domain "$api" ||
         die "usage: sudo ./nullbin setup-api api.example.com https://paste.example.com (the API's domain name, then the website's exact address)"
       valid_origin "$origin" ||
         die "the website address must be https:// and a domain name, with no path or trailing slash and no :443, such as https://paste.example.com"
-      write_config env.api.example .env.api "API_DOMAIN=$api" "FRONTEND_ORIGIN=$origin"
-      echo "Next: point $api at this server, then run: sudo ./nullbin start"
+      case $# in
+        2) ;;
+        3) [[ $3 == --cloudflare ]] || die "unknown option $3 (did you mean --cloudflare?)"; cloudflare=(CLOUDFLARE=true) ;;
+        *) die "usage: sudo ./nullbin setup-api api.example.com https://paste.example.com [--cloudflare]" ;;
+      esac
+      write_config env.api.example .env.api "API_DOMAIN=$api" "FRONTEND_ORIGIN=$origin" "${cloudflare[@]}"
+      if [[ ${#cloudflare[@]} -gt 0 ]]; then
+        echo "Cloudflare mode is on. Next: in Cloudflare, add a proxied (orange cloud) DNS record for $api"
+        echo "pointing at this server, then run: sudo ./nullbin start"
+      else
+        echo "Next: point $api at this server, then run: sudo ./nullbin start"
+      fi
+      ;;
+    cloudflare)
+      layout
+      local want=${1:-status} current=${settings[CLOUDFLARE]:-false}
+      [[ $# -le 1 ]] || die "usage: sudo ./nullbin cloudflare [on | off]"
+      case $want in
+        status)
+          cloudflare_status
+          exit 0
+          ;;
+        on)
+          if [[ $current == true ]]; then
+            echo "Cloudflare mode is already on."
+            cloudflare_status
+            exit 0
+          fi
+          set_setting CLOUDFLARE=true
+          ;;
+        off)
+          if [[ $current != true ]]; then
+            echo "Cloudflare mode is already off."
+            exit 0
+          fi
+          # Off is the default, so the setting is removed rather than set to false.
+          set_setting CLOUDFLARE=
+          ;;
+        *) die "usage: sudo ./nullbin cloudflare [on | off]" ;;
+      esac
+      settings=()
+      check_config
+      start
+      cloudflare_status
       ;;
     start)
       layout
@@ -326,6 +459,11 @@ Set them aside with: git -C $repo stash --include-untracked (and move ignored on
       layout
       echo "Running version:   $(running)"
       echo "Checked-out code:  $(installed)"
+      if [[ ${settings[CLOUDFLARE]:-false} == true ]]; then
+        echo "Cloudflare mode:   on (details: sudo ./nullbin cloudflare)"
+      else
+        echo "Cloudflare mode:   off"
+      fi
       "${compose[@]}" ps
       ;;
     logs)
@@ -363,7 +501,8 @@ Set them aside with: git -C $repo stash --include-untracked (and move ignored on
 }
 
 usage() {
-  sed -n '2,14p' "${BASH_SOURCE[0]}" | cut -c 3-
+  # The comment at the top of this file, up to the end of its command list.
+  awk 'NR > 1 { if (/^#$/ && listed) exit; if (/sudo \.\/nullbin /) listed = 1; print }' "${BASH_SOURCE[0]}" | cut -c 3-
 }
 
 main "$@"
