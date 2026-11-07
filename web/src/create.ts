@@ -12,6 +12,7 @@ import {
   busy,
   chip,
   clearError,
+  icon,
   copyText,
   el,
   formatBytes,
@@ -24,6 +25,7 @@ import {
 } from './dom.ts';
 import { PasteError } from './format.ts';
 import { encodeKeyFragment, encodeTokenFragment } from './link.ts';
+import { MAX_FILES, archiveName, zipFiles } from './zip.ts';
 import { loadSodium } from './sodium.ts';
 import { initShareActions } from './share.ts';
 
@@ -35,7 +37,7 @@ export function initCreate(draft?: { text: string; file: File | null }): void {
   const composer = el('composer');
   const text = el<HTMLTextAreaElement>('text');
   const fileInput = el<HTMLInputElement>('file');
-  const fileChip = el('file-chip');
+  const fileList = el<HTMLUListElement>('file-list');
   const charCount = el('char-count');
   const burn = el<HTMLInputElement>('burn');
   const burnReads = el<HTMLInputElement>('burn-reads');
@@ -52,22 +54,52 @@ export function initCreate(draft?: { text: string; file: File | null }): void {
   if (/Mac|iPhone|iPad/.test(navigator.userAgent)) el('kbd-mod').textContent = '⌘';
   text.focus();
 
-  // --- File attachment: button or drag and drop ---
-  let file: File | null = null;
-  const setFile = (f: File | null) => {
-    file = f;
-    if (!f) fileInput.value = '';
-    el('file-name').textContent = f?.name ?? '';
-    el('file-size').textContent = f ? formatBytes(f.size) : '';
-    show(fileChip, f !== null);
-    el('attach-label').textContent = f ? 'Replace file' : 'Attach a file';
-    if (f) announce(`Attached ${f.name}.`);
+  // --- File attachments: button or drag and drop. Several files are sent
+  // as one zip archive (zip.ts). ---
+  let files: File[] = [];
+  const renderFiles = () => {
+    fileList.replaceChildren(...files.map((f, i) => {
+      const li = document.createElement('li');
+      li.className = 'nb-file-chip';
+      const name = document.createElement('span');
+      name.className = 'nb-file-chip-name';
+      name.textContent = f.name; // never innerHTML
+      name.title = f.name;
+      const size = document.createElement('span');
+      size.className = 'nb-muted';
+      size.textContent = formatBytes(f.size);
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.className = 'nb-chip-x';
+      remove.setAttribute('aria-label', `Remove ${f.name}`);
+      remove.append(icon('x'));
+      remove.addEventListener('click', () => {
+        files = files.filter((_, j) => j !== i);
+        renderFiles();
+        announce(`Removed ${f.name}.`);
+        (fileList.querySelector<HTMLButtonElement>('.nb-chip-x') ?? fileInput).focus();
+      });
+      li.append(icon('file'), name, size, remove);
+      return li;
+    }));
+    show(fileList, files.length > 0);
+    el('attach-label').textContent = files.length > 0 ? 'Add files' : 'Attach files';
   };
-  fileInput.addEventListener('change', () => setFile(fileInput.files?.[0] ?? null));
-  el('file-remove').addEventListener('click', () => {
-    setFile(null);
-    announce('File removed.');
-    fileInput.focus();
+  const addFiles = (added: Iterable<File>) => {
+    const list = [...added];
+    if (list.length === 0) return;
+    if (files.length + list.length > MAX_FILES) {
+      showError(`A paste can hold up to ${MAX_FILES} files.`);
+      return;
+    }
+    clearError();
+    files = [...files, ...list];
+    renderFiles();
+    announce(list.length === 1 ? `Attached ${list[0]!.name}.` : `Attached ${list.length} files.`);
+  };
+  fileInput.addEventListener('change', () => {
+    addFiles(fileInput.files ?? []);
+    fileInput.value = ''; // the same file can be picked again later
   });
 
   const hasFiles = (e: DragEvent) => e.dataTransfer?.types.includes('Files') ?? false;
@@ -92,8 +124,7 @@ export function initCreate(draft?: { text: string; file: File | null }): void {
     dragDepth = 0;
     composer.classList.remove('nb-dragging');
     if (form.getAttribute('aria-busy') === 'true') return;
-    const f = e.dataTransfer?.files[0];
-    if (f) setFile(f);
+    addFiles(e.dataTransfer?.files ?? []);
   });
   // A file dropped anywhere else must not make the browser open it.
   window.addEventListener('dragover', (e) => hasFiles(e) && e.preventDefault());
@@ -107,7 +138,7 @@ export function initCreate(draft?: { text: string; file: File | null }): void {
   text.addEventListener('input', updateCount);
   if (draft) {
     text.value = draft.text;
-    setFile(draft.file);
+    if (draft.file) addFiles([draft.file]);
     updateCount();
   }
 
@@ -172,7 +203,7 @@ export function initCreate(draft?: { text: string; file: File | null }): void {
     ev.preventDefault();
     if (form.getAttribute('aria-busy') === 'true') return;
     clearError();
-    if (text.value.trim() === '' && !file) {
+    if (text.value.trim() === '' && files.length === 0) {
       showError('Add some text or attach a file first.');
       text.setAttribute('aria-invalid', 'true');
       text.focus();
@@ -199,7 +230,7 @@ export function initCreate(draft?: { text: string; file: File | null }): void {
     try {
       const share = await createAndUpload(progress, {
         text: text.value,
-        file,
+        files,
         expiresIn: Number(expiry.value),
         password: pw,
         burn: burn.checked,
@@ -209,7 +240,8 @@ export function initCreate(draft?: { text: string; file: File | null }): void {
       // Do not leave plaintext or the password lying around in the form.
       text.value = '';
       password.value = '';
-      setFile(null);
+      files = [];
+      renderFiles();
       updateCount();
       showSection('result');
       initShareActions('result', share);
@@ -236,7 +268,7 @@ export function initCreate(draft?: { text: string; file: File | null }): void {
 
 interface CreateOptions {
   text: string;
-  file: File | null;
+  files: readonly File[];
   expiresIn: number;
   password: string;
   burn: boolean;
@@ -245,14 +277,24 @@ interface CreateOptions {
 }
 
 async function createAndUpload(progress: Progress, o: CreateOptions): Promise<string> {
+  // One file is attached as it is; several travel as one zip archive.
+  let file: Blob | null = o.files[0] ?? null;
+  let filename = o.files[0]?.name ?? null;
+  let mime = o.files[0]?.type || null;
+  if (o.files.length > 1) {
+    progress.set(0, 'Preparing files…');
+    file = await zipFiles(o.files, (f) => progress.set(f, `Preparing ${o.files.length} files · ${Math.floor(f * 100)}%`));
+    filename = archiveName(o.files.length);
+    mime = 'application/zip';
+  }
   progress.set(0, o.password ? 'Deriving a key from the password…' : 'Encrypting…');
   const sodium = await loadSodium();
   await nextFrame(); // let the status paint; Argon2id blocks the page briefly
   const prepared = preparePaste(sodium, {
     text: o.text,
-    file: o.file,
-    filename: o.file?.name ?? null,
-    mime: o.file?.type || null,
+    file,
+    filename,
+    mime,
     password: o.password,
     discussion: o.discussion,
   });
@@ -287,7 +329,8 @@ async function createAndUpload(progress: Progress, o: CreateOptions): Promise<st
   if (o.burn) chips.push(chip(`Burn after ${o.maxReads.toLocaleString()} ${o.maxReads === 1 ? 'open' : 'opens'}`, 'flame', 'warn'));
   if (o.password) chips.push(chip('Password', 'lock'));
   if (o.discussion) chips.push(chip('Discussion', 'chat', 'accent'));
-  if (o.file) chips.push(chip(o.file.name, 'file', 'file'));
+  if (o.files.length === 1) chips.push(chip(o.files[0]!.name, 'file', 'file'));
+  else if (o.files.length > 1) chips.push(chip(`${o.files.length} files (as ${archiveName(o.files.length)})`, 'file', 'file'));
   if (chips.length === 0) chips.push(chip('Link only'));
   el('result-chips').replaceChildren(...chips);
   show(el('result-password-note'), o.password !== '');

@@ -26,7 +26,8 @@ reading are all built in. There are no accounts and no database.
 Nullbin works in current Chrome, Edge, Firefox and Safari (browsers from
 mid-2022 on; Safari 16.4 or later). Older browsers cannot open it.
 
-1. Enter text, attach a file, or both.
+1. Enter text, attach files, or both. Several files are sent as one zip
+   archive, which the reader downloads and opens.
 2. Choose how long the paste lasts, and any options: a password, a
    discussion, or burn after reading.
 3. Select **Create** and share the **whole link, including everything after
@@ -283,6 +284,7 @@ Option A and Option B.
 |---|---|
 | Update to the latest release | `sudo ./nullbin update` |
 | Show the running version and container status | `sudo ./nullbin status` |
+| Show how many pastes there are, and storage and disk space used | `sudo ./nullbin stats` |
 | Read recent logs | `sudo ./nullbin logs` |
 | Stop | `sudo ./nullbin stop` |
 | Start | `sudo ./nullbin start` |
@@ -571,7 +573,7 @@ Binary units are powers of 1,024. Text limits count JavaScript UTF-16 units.
 |---|---|
 | Paste size | 100 MiB by default; configurable from 64 KiB to 2 GiB, including encryption overhead. |
 | Text and metadata | The encrypted metadata, including the text, filename and type, must fit in 16 MiB. |
-| Attachments | One file per paste, with optional text. Filename and type up to 255 characters each. |
+| Attachments | Up to 100 files per paste, with optional text. Several files become one uncompressed zip archive in the sender's browser before encryption: names are stripped of folders, drive letters, control and direction characters and leading dots, and made unique; entries carry no real dates and are never executable. Filename and type up to 255 characters each. |
 | Text preview | Up to 5,000 lines or 100,000 characters. Copy, Raw text, Save document and Clone use the full text. |
 | Saving and cloning files | Up to 64 MiB in memory. Larger files need streaming saves (desktop Chrome or Edge). Files are never previewed or opened. |
 | Discussions | Up to 200 comments per paste; 4,000 characters of text and a 40-character name each. |

@@ -14,6 +14,7 @@
 #   sudo ./nullbin update           update to the latest release
 #   sudo ./nullbin update v1.2.3    switch to a specific release (or back to one)
 #   sudo ./nullbin status           installed version and container status
+#   sudo ./nullbin stats            how many pastes, storage and disk space used
 #   sudo ./nullbin logs             recent logs
 #   sudo ./nullbin stop             stop Nullbin (pastes are kept)
 #   sudo ./nullbin delete <id>      remove a reported paste by its ID
@@ -486,6 +487,17 @@ Set them aside with: git -C $repo stash --include-untracked (and move ignored on
         echo "Cloudflare mode:   off"
       fi
       "${compose[@]}" ps
+      ;;
+    stats)
+      layout
+      [[ $# -eq 0 ]] || die "usage: sudo ./nullbin stats"
+      # Counts and sizes only, never paste IDs. It only reads the data, so it
+      # runs inside the running API when there is one.
+      if [[ -n $("${compose[@]}" ps --status running -q nullbin 2>/dev/null) ]]; then
+        "${compose[@]}" exec -T nullbin /nullbin stats
+      else
+        "${compose[@]}" run --rm --no-deps -T nullbin stats
+      fi
       ;;
     logs)
       layout

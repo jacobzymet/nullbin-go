@@ -202,6 +202,7 @@ interface CreateOptions {
   discussion?: boolean;
   expiry?: string;
   file?: { name: string; mimeType: string; buffer: Buffer };
+  files?: { name: string; mimeType: string; buffer: Buffer }[];
 }
 
 async function createPaste(o: CreateOptions): Promise<{ share: string; del: string }> {
@@ -209,6 +210,7 @@ async function createPaste(o: CreateOptions): Promise<{ share: string; del: stri
   await goto(h, `${origin}/`);
   if (o.text !== undefined) await h.page.fill('#text', o.text);
   if (o.file) await h.page.setInputFiles('#file', o.file);
+  if (o.files) await h.page.setInputFiles('#file', o.files);
   if (o.burn) await h.page.check('#burn');
   if (o.maxReads !== undefined) await h.page.fill('#burn-reads', String(o.maxReads));
   if (o.discussion) await h.page.check('#discussion');
@@ -419,6 +421,69 @@ test('decrypted text reveals once, stays usable during motion, and respects redu
   }
 });
 
+test('hostile file names stay inert text, and the file limit holds', async () => {
+  const h = await open();
+  await goto(h, `${origin}/`);
+  const hostile = [
+    '<img src=x onerror="document.title=\'pwned\'">.txt',
+    '"><svg onload=alert(1)>.png',
+    "'); alert(1); ('.js",
+    'invoice\u202Efdp.exe',
+    '{{constructor.constructor("alert(1)")()}}',
+  ];
+  await h.page.setInputFiles('#file', hostile.map((name) => ({ name, mimeType: 'text/plain', buffer: Buffer.from('x') })));
+  const shown = await h.page.locator('#file-list .nb-file-chip-name').allTextContents();
+  assert.deepEqual(shown, hostile, 'names are shown exactly as text');
+  assert.equal(await h.page.locator('#file-list img, #file-list svg:not(.nb-i), #file-list script').count(), 0, 'no element was injected');
+  assert.equal(await h.page.locator('#file-list .nb-chip-x').first().getAttribute('aria-label'), `Remove ${hostile[0]}`);
+  assert.notEqual(await h.page.title(), 'pwned');
+  // Up to the limit, then refused as a whole.
+  await h.page.setInputFiles('#file', Array.from({ length: 95 }, (_, i) => ({ name: `f${i}`, mimeType: 'text/plain', buffer: Buffer.from('') })));
+  assert.equal(await h.page.locator('#file-list li').count(), 100);
+  await h.page.setInputFiles('#file', { name: 'one-too-many', mimeType: 'text/plain', buffer: Buffer.from('') });
+  assert.equal(await h.page.locator('#file-list li').count(), 100, 'the 101st file is refused');
+  assert.match((await h.page.textContent('#error-banner')) ?? '', /up to 100 files/);
+  await h.check();
+  await h.context.close();
+});
+
+test('several files travel as one verified zip with clean names', async () => {
+  const big = Buffer.alloc(200_000);
+  for (let i = 0; i < big.length; i++) big[i] = (i * 13 + 5) & 0xff;
+  const files = [
+    { name: 'notes.txt', mimeType: 'text/plain', buffer: Buffer.from('hello') },
+    { name: 'data.bin', mimeType: 'application/octet-stream', buffer: big },
+    { name: String.raw`..\..\evil.sh`, mimeType: 'text/plain', buffer: Buffer.from('#!/bin/sh') },
+  ];
+  const { share } = await createPaste({ text: 'three files', files });
+
+  const h = await open({ noFileSystemAccess: true });
+  await goto(h, share);
+  await h.page.waitForSelector('#view-file-card', { state: 'visible', timeout: 60_000 });
+  assert.equal(await h.page.textContent('#view-filename'), '3 files.zip');
+  assert.equal(await h.page.textContent('#view-mime'), 'application/zip');
+  const [download] = await Promise.all([h.page.waitForEvent('download'), h.page.click('#save-file')]);
+  assert.equal(download.suggestedFilename(), '3 files.zip');
+  const zip = await readFile(await download.path());
+  // Read the central directory independently of the code that wrote it.
+  const eocd = zip.length - 22;
+  assert.equal(zip.readUInt32LE(eocd), 0x06054b50);
+  const entries: { name: string; data: Buffer }[] = [];
+  for (let i = 0, p = zip.readUInt32LE(eocd + 16); i < zip.readUInt16LE(eocd + 10); i++) {
+    const size = zip.readUInt32LE(p + 24);
+    const nameLen = zip.readUInt16LE(p + 28);
+    const local = zip.readUInt32LE(p + 42);
+    const name = zip.subarray(p + 46, p + 46 + nameLen).toString('utf8');
+    const start = local + 30 + zip.readUInt16LE(local + 26);
+    entries.push({ name, data: zip.subarray(start, start + size) });
+    p += 46 + nameLen;
+  }
+  assert.deepEqual(entries.map((e) => e.name), ['notes.txt', 'data.bin', '_.._evil.sh']);
+  for (const [i, e] of entries.entries()) assert.ok(e.data.equals(files[i]!.buffer), `${e.name} matches`);
+  await h.check();
+  await h.context.close();
+});
+
 test('password + file paste: wrong password, retry, verified download', async () => {
   const content = Buffer.alloc(300_000);
   for (let i = 0; i < content.length; i++) content[i] = (i * 31 + 7) & 0xff;
@@ -448,7 +513,7 @@ test('password + file paste: wrong password, retry, verified download', async ()
   await h.page.click('#view-clone');
   await h.page.waitForSelector('#create:not([hidden])');
   assert.equal(await h.page.inputValue('#text'), 'see attachment');
-  assert.equal(await h.page.textContent('#file-name'), 'report.pdf');
+  assert.equal(await h.page.textContent('#file-list .nb-file-chip-name'), 'report.pdf');
   assert.equal(await h.page.isChecked('#password-switch'), false, 'clones do not reuse the original password');
   await h.page.fill('#text', '');
   await h.page.click('#create-submit');
@@ -884,10 +949,10 @@ test('paste controls stay reachable at phone and desktop widths in both themes',
       await h.page.selectOption('#expiry', '300');
       assert.equal(await h.page.inputValue('#expiry'), '300');
       await h.page.setInputFiles('#file', { name: `${'long-'.repeat(40)}file.txt`, mimeType: 'text/plain', buffer: Buffer.from('file') });
-      assert.equal(await h.page.textContent('#attach-label'), 'Replace file');
+      assert.equal(await h.page.textContent('#attach-label'), 'Add files');
       await checkWidth();
-      await h.page.click('#file-remove');
-      assert.equal(await h.page.textContent('#attach-label'), 'Attach a file');
+      await h.page.click('#file-list .nb-chip-x');
+      assert.equal(await h.page.textContent('#attach-label'), 'Attach files');
       await h.page.uncheck('#discussion');
       await h.page.uncheck('#password-switch');
       await h.page.fill('#text', 'Responsive action layout');

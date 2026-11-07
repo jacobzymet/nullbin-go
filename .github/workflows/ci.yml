@@ -231,6 +231,12 @@ jobs:
           curl -fsSk -X PUT -H 'Content-Type: application/octet-stream' -H "Nullbin-Upload-Token: $token"             --data-binary @blob.bin "https://localhost/api/v1/pastes/$id/chunks/0"
           curl -fsSk -X POST -H "Nullbin-Upload-Token: $token" "https://localhost/api/v1/pastes/$id/finalize"
           test "$(curl -sk -o /dev/null -w '%{http_code}' "https://localhost/api/v1/pastes/$id")" = 200
+          # Stats count the paste but never name it, and the API keeps running.
+          sudo ./nullbin stats | tee stats.txt
+          grep -q '^Pastes:              1 ' stats.txt
+          grep -q '^Disk: .* free of ' stats.txt
+          if grep -q "$id" stats.txt; then exit 1; fi
+          test "$(curl -sk -o /dev/null -w '%{http_code}' "https://localhost/api/v1/pastes/$id")" = 200
           # The command from the README.
           sudo ./nullbin delete "$id" | tee delete.txt
           grep -q Deleted delete.txt

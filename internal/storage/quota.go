@@ -178,50 +178,9 @@ func (s *Store) rebuildAllocations() error {
 		}
 		for _, entry := range entries {
 			dir := path.Join(parent, entry.Name())
-			var physical, comments int64
-			err := fs.WalkDir(s.root.FS(), dir, func(name string, d fs.DirEntry, err error) error {
-				if err != nil {
-					return err
-				}
-				info, err := d.Info()
-				if err != nil {
-					return err
-				}
-				n := info.Size()
-				if n < 0 || n > math.MaxInt64-4096 {
-					return ErrQuota
-				}
-				if !d.IsDir() && path.Base(path.Dir(name)) == dirComments && validCommentName(d.Name()) {
-					comments += commentCharge(int(min(n, MaxCommentBytes)))
-				}
-				n = (n/4096 + 1) * 4096
-				if n > math.MaxInt64-physical {
-					return ErrQuota
-				}
-				physical += n
-				return nil
-			})
+			reserved, err := s.entryCharge(parent, dir)
 			if err != nil {
 				return err
-			}
-			// The bytes on disk are always charged. Valid metadata can only
-			// raise that; invalid values are ignored rather than stopping the
-			// server from starting (the sweeper deals with such entries).
-			reserved := physical
-			if parent == dirPending {
-				var u upload
-				if err := s.readJSON(path.Join(dir, fileUpload), &u); err == nil || errors.Is(err, ErrNewerFormat) {
-					if u.Received >= 0 && u.Received <= math.MaxInt64-entryOverhead {
-						reserved = max(reserved, entryOverhead+u.Received)
-					}
-				}
-			} else {
-				var m Meta
-				if err := s.readJSON(path.Join(dir, fileMeta), &m); err == nil || errors.Is(err, ErrNewerFormat) {
-					if n, err := allocationSize(m.Size); err == nil && n <= math.MaxInt64-comments {
-						reserved = max(reserved, n+comments)
-					}
-				}
 			}
 			if reserved > math.MaxInt64-s.used {
 				return ErrQuota
@@ -235,4 +194,56 @@ func (s *Store) rebuildAllocations() error {
 		}
 	}
 	return nil
+}
+
+// entryCharge is what one entry of parent (pending/, pastes/ or claimed/)
+// is charged: its bytes on disk, rounded up to blocks, or more if its
+// metadata says so. It only reads.
+func (s *Store) entryCharge(parent, dir string) (int64, error) {
+	var physical, comments int64
+	err := fs.WalkDir(s.root.FS(), dir, func(name string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		n := info.Size()
+		if n < 0 || n > math.MaxInt64-4096 {
+			return ErrQuota
+		}
+		if !d.IsDir() && path.Base(path.Dir(name)) == dirComments && validCommentName(d.Name()) {
+			comments += commentCharge(int(min(n, MaxCommentBytes)))
+		}
+		n = (n/4096 + 1) * 4096
+		if n > math.MaxInt64-physical {
+			return ErrQuota
+		}
+		physical += n
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	// The bytes on disk are always charged. Valid metadata can only
+	// raise that; invalid values are ignored rather than stopping the
+	// server from starting (the sweeper deals with such entries).
+	reserved := physical
+	if parent == dirPending {
+		var u upload
+		if err := s.readJSON(path.Join(dir, fileUpload), &u); err == nil || errors.Is(err, ErrNewerFormat) {
+			if u.Received >= 0 && u.Received <= math.MaxInt64-entryOverhead {
+				reserved = max(reserved, entryOverhead+u.Received)
+			}
+		}
+	} else {
+		var m Meta
+		if err := s.readJSON(path.Join(dir, fileMeta), &m); err == nil || errors.Is(err, ErrNewerFormat) {
+			if n, err := allocationSize(m.Size); err == nil && n <= math.MaxInt64-comments {
+				reserved = max(reserved, n+comments)
+			}
+		}
+	}
+	return reserved, nil
 }

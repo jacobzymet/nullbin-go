@@ -105,8 +105,8 @@
         </div>
         </div>
         <div class="nb-toolbar-attachment">
-          <input id="file" type="file" class="nb-file-input" aria-label="Attach or replace a file">
-          <label id="attach" for="file" class="btn nb-btn-secondary"><svg class="nb-i" aria-hidden="true"><use href="#i-clip"/></svg><span id="attach-label">Attach a file</span></label>
+          <input id="file" type="file" class="nb-file-input" multiple aria-label="Attach files">
+          <label id="attach" for="file" class="btn nb-btn-secondary"><svg class="nb-i" aria-hidden="true"><use href="#i-clip"/></svg><span id="attach-label">Attach files</span></label>
         </div>
         <button id="create-submit" type="submit" class="btn nb-btn-primary"><svg class="nb-i" aria-hidden="true"><use href="#i-lock"/></svg><span>Create</span></button>
       </div>
@@ -122,13 +122,8 @@
         </div>
         <textarea id="text" class="nb-editor" rows="20" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off" placeholder="Paste text here…" aria-invalid="false"></textarea>
         <div class="nb-composer-bar">
-          <span id="file-chip" class="nb-file-chip" hidden>
-            <svg class="nb-i" aria-hidden="true"><use href="#i-file"/></svg>
-            <span id="file-name" class="nb-file-chip-name"></span>
-            <span id="file-size" class="nb-muted"></span>
-            <button id="file-remove" type="button" class="nb-chip-x" aria-label="Remove the attached file"><svg class="nb-i" aria-hidden="true"><use href="#i-x"/></svg></button>
-          </span>
-          <span class="nb-meta nb-drop-label">Drag and drop a file to attach it.</span>
+          <ul id="file-list" class="nb-file-list" aria-label="Attached files" hidden></ul>
+          <span class="nb-meta nb-drop-label">Drag and drop files to attach them. Several files are sent as one zip.</span>
           <span id="char-count" class="nb-meta ms-auto">0 characters</span>
         </div>
         <div class="nb-drop-hint" aria-hidden="true"><svg class="nb-i" aria-hidden="true"><use href="#i-clip"/></svg>Drop to attach</div>

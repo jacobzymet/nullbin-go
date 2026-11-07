@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -33,11 +34,77 @@ func main() {
 	if len(os.Args) == 3 && os.Args[1] == "delete" {
 		os.Exit(deletePaste(os.Environ(), os.Args[2], os.Stdout))
 	}
+	if len(os.Args) == 2 && os.Args[1] == "stats" {
+		os.Exit(showStats(os.Environ(), os.Stdout))
+	}
 	if len(os.Args) > 1 {
-		log.Printf("usage: nullbin [healthcheck | delete <paste id>] (configuration comes from NULLBIN_* environment variables)")
+		log.Printf("usage: nullbin [healthcheck | stats | delete <paste id>] (configuration comes from NULLBIN_* environment variables)")
 		os.Exit(2)
 	}
 	os.Exit(run())
+}
+
+// showStats prints counts and sizes for the operator. It only reads the
+// data directory, so it is safe while the server runs.
+func showStats(environ []string, out io.Writer) int {
+	cfg, err := loadConfig(environ)
+	if err != nil {
+		fmt.Fprintln(out, "invalid configuration:", err)
+		return 2
+	}
+	st, err := storage.ReadStats(cfg.DataDir, time.Now())
+	if err != nil {
+		fmt.Fprintln(out, "read data directory:", err)
+		return 1
+	}
+	free, total, ok := storage.DiskSpace(cfg.DataDir)
+	fmt.Fprint(out, formatStats(st, cfg, free, total, ok))
+	return 0
+}
+
+// formatStats renders stats for people. It contains no identifiers.
+func formatStats(st storage.Stats, cfg config, free, total int64, diskKnown bool) string {
+	var b strings.Builder
+	line := func(format string, args ...any) { fmt.Fprintf(&b, format+"\n", args...) }
+	line("Pastes:              %d (%d burn after reading, %d with a discussion)", st.Pastes, st.Burn, st.Discussion)
+	line("  encrypted size:    %s", humanBytes(st.PasteBytes))
+	line("Comments:            %d (%s)", st.Comments, humanBytes(st.CommentBytes))
+	line("Unfinished uploads:  %d", st.Pending)
+	if st.Removable > 0 {
+		line("Waiting for cleanup: %d expired or used-up pastes (removed within a minute)", st.Removable)
+	}
+	if st.Newer > 0 {
+		line("From a newer version: %d pastes, kept but not served", st.Newer)
+	}
+	line("Storage budget:      %s of %s used (%s)", humanBytes(st.Charged), humanBytes(cfg.MaxStorage), percent(st.Charged, cfg.MaxStorage))
+	line("Paste limit:         %d of %d used (%s)", st.Entries, cfg.MaxPastes, percent(int64(st.Entries), int64(cfg.MaxPastes)))
+	if diskKnown {
+		line("Disk:                %s free of %s", humanBytes(free), humanBytes(total))
+	} else {
+		line("Disk:                unknown on this platform")
+	}
+	return b.String()
+}
+
+func humanBytes(n int64) string {
+	if n < 1024 {
+		return fmt.Sprintf("%d B", n)
+	}
+	v, unit := float64(n)/1024, "KiB"
+	for _, u := range []string{"MiB", "GiB", "TiB"} {
+		if v < 1024 {
+			break
+		}
+		v, unit = v/1024, u
+	}
+	return fmt.Sprintf("%.1f %s", v, unit)
+}
+
+func percent(n, of int64) string {
+	if of <= 0 {
+		return "-"
+	}
+	return fmt.Sprintf("%.1f%%", float64(n)*100/float64(of))
 }
 
 // healthcheck asks the running server on this machine for its version and
