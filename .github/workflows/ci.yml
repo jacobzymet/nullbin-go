@@ -252,6 +252,15 @@ jobs:
           grep -qi "^content-security-policy: default-src 'none'" headers.txt
           grep -qi '^strict-transport-security: max-age=31536000' headers.txt
           if grep -qi '^server:' headers.txt; then echo 'Server header leaked'; exit 1; fi
+          # API responses carry each security header once: a repeated one, such
+          # as Cross-Origin-Resource-Policy, is invalid and browsers ignore it.
+          # Two policies are intended: the site's and the API's sandbox.
+          curl -fsSk -D api-headers.txt -o /dev/null https://localhost/api/v1/version
+          for h in referrer-policy x-content-type-options cross-origin-opener-policy cross-origin-embedder-policy cross-origin-resource-policy x-frame-options permissions-policy strict-transport-security; do
+            test "$(grep -ic "^$h:" api-headers.txt)" = 1
+          done
+          test "$(grep -ic '^content-security-policy:' api-headers.txt)" = 2
+          if grep -qiE '^(via|server):' api-headers.txt; then echo 'Via or Server header leaked'; exit 1; fi
           test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost/)" = 308
           # Nullbin itself is not reachable from the host.
           if curl -s -m 3 http://127.0.0.1:8080/; then echo 'nullbin is reachable directly'; exit 1; fi
@@ -495,7 +504,11 @@ jobs:
                   return err
           assert call('/').status == 404
           assert call('/assets/app.js').status == 404
-          version = json.load(call('/api/v1/version'))
+          resp = call('/api/v1/version')
+          for name in ('Content-Security-Policy', 'Cross-Origin-Resource-Policy', 'X-Content-Type-Options', 'X-Frame-Options', 'Referrer-Policy'):
+              assert len(resp.headers.get_all(name) or []) == 1, name  # a repeated header is invalid
+          assert resp.headers.get('Via') is None and resp.headers.get('Server') is None
+          version = json.load(resp)
           assert version == {'mode': 'api', 'version': 'v0.0.0-ci'}, version
           for origin, status in ((allowed, 204), ('https://evil.example', 403)):
               resp = call('/api/v1/pastes', 'OPTIONS', headers={

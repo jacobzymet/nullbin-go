@@ -49,6 +49,7 @@ import /etc/caddy/nullbin/cloudflare-{$CLOUDFLARE:false}.caddy
 		max_size 9MB
 	}
 	header -Server
+	header -Via
 	import edge-site
 	handle /api/v1/* {
 		reverse_proxy 172.30.53.20:8080 {

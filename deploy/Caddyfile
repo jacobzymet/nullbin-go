@@ -48,6 +48,7 @@ import /etc/caddy/nullbin/cloudflare-{$CLOUDFLARE:false}.caddy
 	root * /srv
 	import /etc/caddy/headers.caddy
 	header -Server
+	header -Via
 	import edge-site
 
 	# API responses cannot become executable pages on the frontend origin,
@@ -61,8 +62,22 @@ import /etc/caddy/nullbin/cloudflare-{$CLOUDFLARE:false}.caddy
 			# trusts this header only from Caddy, so nothing a client or another
 			# proxy adds can reach it.
 			header_up X-Forwarded-For {client_ip}
+			# An extra policy for API responses, enforced together with the
+			# site-wide one: they can never run as pages.
 			header_down Content-Security-Policy "default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; sandbox"
-			header_down X-Content-Type-Options nosniff
+			# This site sets these for every response (headers.caddy). The API's
+			# own copies are dropped: a header sent twice, such as
+			# "Cross-Origin-Resource-Policy: same-origin, same-origin", is
+			# invalid, and browsers then ignore it. Caddy's values are the only
+			# ones, whatever the API sends.
+			header_down -Referrer-Policy
+			header_down -X-Content-Type-Options
+			header_down -Cross-Origin-Opener-Policy
+			header_down -Cross-Origin-Embedder-Policy
+			header_down -Cross-Origin-Resource-Policy
+			header_down -X-Frame-Options
+			header_down -Permissions-Policy
+			header_down -Strict-Transport-Security
 			header_down -Service-Worker-Allowed
 			header_down -Set-Cookie
 		}
