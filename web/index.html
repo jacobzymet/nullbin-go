@@ -319,7 +319,9 @@
 <footer class="nb-shell nb-foot">
   <span>Encrypted in your browser. The server stores ciphertext only.</span>
   <nav class="nb-foot-links" aria-label="About Nullbin">
-    <a href="mailto:hi@jacobzymet.com?subject=Nullbin%20vulnerability%20report" class="nb-foot-link" title="Report a security flaw in the Nullbin software to its maintainer. To report a paste, contact this site's operator.">Report a vulnerability</a>
+    <!-- Cloudflare's Email Address Obfuscation would replace this link with
+         a page of its own and a script the security policy blocks. -->
+    <!--email_off--><a href="mailto:hi@jacobzymet.com?subject=Nullbin%20vulnerability%20report" class="nb-foot-link" title="Report a security flaw in the Nullbin software to its maintainer. To report a paste, contact this site's operator.">Report a vulnerability</a><!--/email_off-->
     <a href="/api/v1/version" class="nb-foot-link" title="This website's version. Opens the server's version details.">Nullbin __NULLBIN_VERSION__</a>
   </nav>
 </footer>
