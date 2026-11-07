@@ -22,6 +22,15 @@ write_files:
       DOMAIN=
       MAX_SIZE=100MiB
   # ---------------------------------------------------------------------------
+  # SSH: keys only, and no root login, whatever the image's defaults. Files
+  # in sshd_config.d are read in order and the first value wins, so this
+  # comes before the image's own settings.
+  - path: /etc/ssh/sshd_config.d/10-nullbin.conf
+    permissions: "0644"
+    content: |
+      PermitRootLogin no
+      PasswordAuthentication no
+      KbdInteractiveAuthentication no
 
 # SSH: keys only, never passwords, and no direct root login.
 ssh_pwauth: false
@@ -38,6 +47,8 @@ packages:
   - unattended-upgrades
 
 runcmd:
+  # Apply the SSH settings above, only if the configuration is valid.
+  - [sh, -euc, "sshd -t && (systemctl reload ssh || systemctl restart ssh)"]
   - [sh, -euc, "ufw default deny incoming && ufw default allow outgoing && ufw allow OpenSSH && ufw allow 80/tcp && ufw allow 443/tcp && ufw --force enable"]
   - [systemctl, enable, --now, docker]
   - |

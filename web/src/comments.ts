@@ -28,7 +28,7 @@ const NONCE_BYTES = 24;
 const ID = /^[0-9a-f]{32}$/;
 // Control characters, bidi overrides and invisible characters, which could
 // disguise a name.
-const UNSAFE_CHARS = /[\u0000-\u001f\u007f-\u009f\u061C\u200B-\u200F\u202A-\u202E\u2060\u2066-\u2069\uFEFF]|[\u{E0000}-\u{E007F}]/gu;
+const UNSAFE_CHARS = /(?![\u200C\u200D])[\p{Cf}\p{Cc}]/gu;
 
 export interface CommentDraft {
   /** id of the comment this replies to, or null. */

@@ -567,3 +567,48 @@ func TestDeletesAreRateLimited(t *testing.T) {
 		t.Fatal("40 deletes in a row were never rate limited")
 	}
 }
+
+// Requests that write to disk share diskWritesTotal places. A client that
+// sends its body slowly must never hold one, or a few dozen connections
+// that never finish their bodies would stop every create, finalize, delete
+// and comment.
+func TestSlowBodiesDoNotHoldDiskWritePlaces(t *testing.T) {
+	e := newEnv(t, func(c *Config) {
+		c.TrustedProxies = []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8")}
+	})
+	addr := startRealServer(t, e)
+	id := strings.Repeat("ab", 16)
+	for i := range diskWritesTotal + 8 {
+		conn, err := net.Dial("tcp", addr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { conn.Close() })
+		fmt.Fprintf(conn, "POST /api/v1/pastes/%s/comments HTTP/1.1\r\nHost: x\r\nContent-Type: application/octet-stream\r\nContent-Length: 1000\r\nX-Forwarded-For: 198.51.%d.%d\r\n\r\n", id, i/250, i%250+1)
+	}
+	time.Sleep(300 * time.Millisecond) // let every handler start waiting for its body
+	start := time.Now()
+	resp, _ := e.do(t, "POST", "/api/v1/pastes", []byte(`{"expires_in":300,"burn_after_reading":false,"total_size":100}`),
+		map[string]string{"Content-Type": "application/json", "X-Forwarded-For": "192.0.2.200"})
+	if resp.StatusCode != http.StatusCreated || time.Since(start) > 2*time.Second {
+		t.Fatalf("create with %d slow comment bodies open: %d after %s", diskWritesTotal+8, resp.StatusCode, time.Since(start))
+	}
+}
+
+// Requests a client's own limit refuses must not use up its /48's share.
+func TestRefusedRequestsDoNotDrainTheSite(t *testing.T) {
+	e := newEnv(t, func(c *Config) {
+		c.TrustedProxies = []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8")}
+	})
+	create := func(xff string) int {
+		resp, _ := e.do(t, "POST", "/api/v1/pastes", []byte(`{"expires_in":300,"burn_after_reading":false,"total_size":100}`),
+			map[string]string{"Content-Type": "application/json", "X-Forwarded-For": xff})
+		return resp.StatusCode
+	}
+	for range 200 {
+		create("2001:db8:9:1::1")
+	}
+	if code := create("2001:db8:9:2::1"); code != http.StatusCreated {
+		t.Fatalf("a neighbour in the same /48 was refused: %d", code)
+	}
+}

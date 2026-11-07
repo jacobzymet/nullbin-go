@@ -9,6 +9,11 @@
 	# (QUIC over UDP) for little benefit here; browsers fall back by themselves.
 	servers {
 		protocols h1 h2
+		# A client gets 10 seconds to send its request headers. Nullbin itself
+		# limits how slowly a body may arrive.
+		timeouts {
+			read_header 10s
+		}
 	}
 	# Never try to add Caddy's local test CA to the container's trust store.
 	skip_install_trust

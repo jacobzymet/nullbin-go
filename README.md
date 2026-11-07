@@ -23,6 +23,9 @@ reading are all built in. There are no accounts and no database.
 
 ## Using Nullbin
 
+Nullbin works in current Chrome, Edge, Firefox and Safari (browsers from
+mid-2022 on; Safari 16.4 or later). Older browsers cannot open it.
+
 1. Enter text, attach a file, or both.
 2. Choose how long the paste lasts, and any options: a password, a
    discussion, or burn after reading.
@@ -308,6 +311,10 @@ version and upload it again (steps 2 and 3 of
 computer, switch versions with `git fetch --tags` and `git checkout v1.2.3`.
 Always update the server first.
 
+`update` installs only versions published on the Releases page from the
+main branch, and refuses if files in `~/nullbin` were changed or added
+(other than your settings), because they would be built in.
+
 **To go back to an earlier release**, give its version:
 `sudo ./nullbin update v1.2.2`. Check that release's notes first; a release
 that changes how pastes are stored will say whether going back is safe.
@@ -336,8 +343,15 @@ change with `sudo ./nullbin start`.
 | `MAX_SIZE` | `100MiB` | Largest paste, including its attachment. Up to `2GiB`. |
 | `MAX_STORAGE` | `10GiB` | Total space Nullbin may use. Keep it well below the disk's free space. |
 | `MAX_PENDING` | `1024` | How many uploads can be in progress at once. |
+| `MAX_PASTES` | `100000` | Most pastes kept at once. Each uses about four inodes; check with `df -i` before raising it. |
 | `DOMAIN` (A) or `API_DOMAIN` (B) | set by `setup` | The server's domain name. |
 | `FRONTEND_ORIGIN` (B only) | set by `setup-api` | The website's exact address. |
+
+Write each setting on its own line as `NAME=value`, with no quotes or
+spaces. `./nullbin` refuses to start with anything else (other forms that
+Docker Compose would accept, unknown names, a name set twice, or Windows line
+endings), because the domain names end up in the HTTPS proxy's
+configuration.
 
 If you change the **API's address** in Option B, also rebuild and upload
 the website with the new address. If you change the **website's address**,
@@ -549,8 +563,9 @@ startup.
 | `NULLBIN_FRONTEND_ORIGIN` | empty | The exact HTTPS website address allowed to call the API. |
 | `NULLBIN_LISTEN_ADDR` | `127.0.0.1:8080` (`:8080` in the image) | Address and port to listen on. |
 | `NULLBIN_DATA_DIR` | `data` (`/data` in the image) | Data directory, created with mode `0700`. |
-| `NULLBIN_MAX_STORAGE` | `10GiB` | Total storage budget (`64KiB` to 1 PiB), including unfinished uploads, metadata and discussion space. |
+| `NULLBIN_MAX_STORAGE` | `10GiB` | Total storage budget, from `64KiB` up to `1048576GiB` (1 PiB), including unfinished uploads, metadata and comments. Units: `KiB`, `MiB`, `GiB`. |
 | `NULLBIN_MAX_PENDING` | `1024` | Unfinished uploads at once (1 to 4096). |
+| `NULLBIN_MAX_PASTES` | `100000` | Pastes at once, including unfinished ones (1 to 10,000,000). Keeps a volume from running out of inodes before bytes. |
 | `NULLBIN_MAX_SIZE` | `100MiB` | Largest paste, `64KiB` to `2GiB`. |
 | `NULLBIN_BEHIND_HTTPS` | `false` | `true` sends `Strict-Transport-Security: max-age=31536000`. |
 | `NULLBIN_TRUSTED_PROXIES` | empty | IPs or CIDR ranges whose `X-Forwarded-For` header is trusted. |
@@ -584,7 +599,7 @@ Forwarded addresses are trusted only from `NULLBIN_TRUSTED_PROXIES`.
 | Concurrent chunk uploads | 512 in total; 4 per client and 16 per IPv6 `/48` |
 | Minimum upload rate | 16 KiB/s on average after 5 seconds |
 | Concurrent downloads | 512 in total; 16 per client and 32 per IPv6 `/48` |
-| Minimum download rate | 32 KiB/s on average after 2 minutes (for password and save dialogs). Time the server spends on its own bandwidth limits does not count. |
+| Minimum download rate | 32 KiB/s on average after 2 minutes (for password and save dialogs). Time the server spends on its own bandwidth limits does not count. Every download also ends 1 minute plus 1 second per 32 KiB of paste after it starts. |
 | Download bandwidth | 4 MiB/s per client, 16 MiB/s in total |
 | Request size | 1 KiB to create a paste; 16 KiB of headers |
 | Disk writes at once | 64 creates, finalizes, deletes and comments; others wait up to 10 s |

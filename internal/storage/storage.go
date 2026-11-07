@@ -35,6 +35,8 @@ import (
 	"path"
 	"runtime"
 	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -108,6 +110,14 @@ var (
 	ErrIncomplete = errors.New("upload incomplete")
 	// ErrCorrupt means stored data failed a consistency check.
 	ErrCorrupt = errors.New("corrupt stored data")
+	// ErrNewerFormat means stored metadata has fields this version does not
+	// know: a newer release wrote it (before a rollback, say). Such a paste
+	// is not served, and never deleted for that reason. It matches
+	// ErrNotFound with errors.Is.
+	ErrNewerFormat = fmt.Errorf("written by a newer version: %w", ErrNotFound)
+	// ErrNotErased means a paste was taken out of service, but its files
+	// could not all be removed yet. The sweeper keeps trying.
+	ErrNotErased = errors.New("removed from service, but its files could not be erased yet")
 )
 
 // OutOfOrderError is returned when a chunk index is not the next one
@@ -176,7 +186,10 @@ func Open(dir string) (*Store, error) {
 
 // OpenWithLimits reconstructs reservations before accepting any requests.
 func OpenWithLimits(dir string, limits Limits) (*Store, error) {
-	if limits.MaxBytes <= 0 || limits.MaxPending <= 0 {
+	if limits.MaxPastes == 0 {
+		limits.MaxPastes = DefaultMaxPastes
+	}
+	if limits.MaxBytes <= 0 || limits.MaxPending <= 0 || limits.MaxPastes < 0 {
 		return nil, errors.New("invalid storage limits")
 	}
 	if err := os.MkdirAll(dir, dirPerm); err != nil {
@@ -392,13 +405,11 @@ func (s *Store) AppendChunk(id string, n int, uploadToken string, body io.Reader
 		return ErrTooLarge
 	}
 
-	// Charge the most this chunk can add before writing any of it. The
-	// allocation is set absolutely, so an earlier failure never leaves it off.
+	// Bytes are charged as they arrive, a segment at a time, so a chunk that
+	// sends nothing holds almost none of the budget. The allocation is set
+	// absolutely, so an earlier failure never leaves it off.
 	charged := entryOverhead + u.Received
 	limit := min(remaining, MaxChunkBytes)
-	if err := s.resize(dir, charged+limit); err != nil {
-		return err
-	}
 	keep := charged // what stays charged afterwards; shrinking never fails
 	defer func() { s.resize(dir, keep) }()
 	f, err := s.openRegular(path.Join(dir, fileBlob), os.O_WRONLY)
@@ -413,7 +424,24 @@ func (s *Store) AppendChunk(id string, n int, uploadToken string, body io.Reader
 	if _, err := f.Seek(u.Received, io.SeekStart); err != nil {
 		return err
 	}
-	written, err := io.Copy(f, io.LimitReader(body, limit+1))
+	const segment = 1 << 20
+	var written int64
+	for {
+		n := min(segment, limit+1-written) // one byte past the limit detects too much
+		if err = s.resize(dir, charged+min(written+n, limit)); err != nil {
+			break
+		}
+		var c int64
+		c, err = io.CopyN(f, body, n)
+		written += c
+		if err == io.EOF {
+			err = nil
+			break
+		}
+		if err != nil || written > limit {
+			break
+		}
+	}
 	if err == nil && written > limit {
 		err = ErrTooLarge
 	}
@@ -619,7 +647,7 @@ func (s *Store) get(id, token string, consume bool) (*Paste, error) {
 	}
 
 	if m.Burn {
-		if !consume || !TokenMatches(m.BurnTokenHash, token) {
+		if !consume || exhausted(m) || !TokenMatches(m.BurnTokenHash, token) {
 			return nil, ErrNotFound
 		}
 		if m.ReadLimit > 1 {
@@ -726,8 +754,7 @@ func (s *Store) Delete(id, deleteToken string) error {
 	if err != nil {
 		return err
 	}
-	s.removeClaim(claim)
-	return nil
+	return s.removeClaim(claim)
 }
 
 // Remove deletes a paste, with its comments, or an unfinished upload,
@@ -737,8 +764,8 @@ func (s *Store) Remove(id string) error {
 	if !ValidID(id) {
 		return ErrNotFound
 	}
-	if s.discard(path.Join(dirPastes, id), id) {
-		return nil
+	if err := s.discard(path.Join(dirPastes, id), id); err == nil || errors.Is(err, ErrNotErased) {
+		return err
 	}
 	dir := path.Join(dirPending, id)
 	if _, err := s.root.Lstat(dir); err != nil {
@@ -783,8 +810,19 @@ func (s *Store) AddComment(id, commentToken string, ciphertext []byte) (int, err
 	if fi, err := s.root.Lstat(cdir); err != nil || !fi.IsDir() {
 		return 0, ErrCorrupt
 	}
-	n := len(s.commentNames(cdir))
+	names := s.commentNames(cdir)
+	n := len(names)
 	if n >= MaxComments {
+		return 0, ErrDiscussionFull
+	}
+	// The next name follows the highest one, so a gap (a file removed by
+	// hand) can never make a new comment replace an existing one.
+	next := 1
+	if n > 0 {
+		last, _ := strconv.Atoi(names[n-1])
+		next = last + 1
+	}
+	if next > 999999 {
 		return 0, ErrDiscussionFull
 	}
 	// Comments are charged as they arrive, so a discussion that nobody
@@ -793,9 +831,13 @@ func (s *Store) AddComment(id, commentToken string, ciphertext []byte) (int, err
 	if err := s.grow(dir, charge); err != nil {
 		return 0, err
 	}
-	name := fmt.Sprintf("%06d", n+1)
+	name := fmt.Sprintf("%06d", next)
 	if err := s.writeFile(cdir, name, ciphertext); err != nil {
-		s.grow(dir, -charge)
+		// Refund only if the comment is not there: the write may have
+		// failed after the file was already in place.
+		if _, lerr := s.root.Lstat(path.Join(cdir, name)); lerr != nil {
+			s.grow(dir, -charge)
+		}
 		return 0, err
 	}
 	return n + 1, nil
@@ -812,6 +854,10 @@ func (s *Store) Comments(id, commentToken string) (iter.Seq2[[]byte, error], err
 		return nil, err
 	}
 	cdir := path.Join(dir, dirComments)
+	// Only a real directory, never a link to another paste's comments.
+	if fi, err := s.root.Lstat(cdir); err == nil && !fi.IsDir() {
+		return nil, ErrCorrupt
+	}
 	names := s.commentNames(cdir)
 	if len(names) > MaxComments {
 		return nil, ErrCorrupt
@@ -893,6 +939,7 @@ type SweepStats struct {
 	StalePending int // uploads older than PendingTTL or idle too long
 	Claimed      int // leftover claimed/ directories
 	Errors       int // entries kept because they could not be checked right now
+	Newer        int // pastes from a newer release, kept but not served
 }
 
 // Sweep deletes expired pastes, stale pending uploads and leftover
@@ -914,6 +961,13 @@ func (s *Store) Sweep() SweepStats {
 			if now.Before(m.ExpiresAt) && !exhausted(m) {
 				continue
 			}
+		case errors.Is(err, ErrNewerFormat):
+			// Written by a newer release. Its expiry is still known, so it
+			// goes when it expires; until then it is kept, not served.
+			if m.ExpiresAt.IsZero() || now.Before(m.ExpiresAt) {
+				st.Newer++
+				continue
+			}
 		case errors.Is(err, ErrCorrupt):
 			unreadable = true // invalid metadata never becomes valid
 		case errors.Is(err, ErrNotFound):
@@ -933,7 +987,7 @@ func (s *Store) Sweep() SweepStats {
 			st.Errors++
 			continue
 		}
-		if !s.discard(dir, name) {
+		if err := s.discard(dir, name); err != nil {
 			st.Errors++
 		} else if unreadable {
 			st.Unreadable++
@@ -1015,24 +1069,38 @@ func (s *Store) claim(dir, id string) (string, error) {
 		s.mu.Unlock()
 		return "", notFoundIfMissing(err)
 	}
+	// Make the move durable before anyone is served: otherwise a power
+	// loss could undo it and a one-open paste could be read twice. The
+	// paste is out of service from here on, so on failure it is removed
+	// rather than risk it coming back.
+	for _, d := range []string{dirPastes, dirClaimed} {
+		if err := s.syncDir(d); err != nil {
+			s.removeClaim(name)
+			return "", err
+		}
+	}
 	return name, nil
 }
 
-func (s *Store) removeClaim(name string) {
-	s.removeAllocated(path.Join(dirClaimed, name)) // Sweep retries on failure
+func (s *Store) removeClaim(name string) error {
+	err := s.removeAllocated(path.Join(dirClaimed, name)) // Sweep retries on failure
 	s.mu.Lock()
 	delete(s.claims, name)
 	s.mu.Unlock()
+	if err != nil {
+		return ErrNotErased
+	}
+	return nil
 }
 
-// discard claims and removes a published paste. It reports success.
-func (s *Store) discard(dir, id string) bool {
+// discard claims and removes a published paste. ErrNotErased means it is
+// out of service but some of its files remain until the sweeper retries.
+func (s *Store) discard(dir, id string) error {
 	claim, err := s.claim(dir, id)
 	if err != nil {
-		return false
+		return err
 	}
-	s.removeClaim(claim)
-	return true
+	return s.removeClaim(claim)
 }
 
 func (s *Store) lock(id string) bool {
@@ -1077,7 +1145,9 @@ func (s *Store) readUpload(dir, uploadToken string) (upload, error) {
 
 func (s *Store) readMeta(dir, id string) (Meta, error) {
 	var m Meta
-	if err := s.readJSON(path.Join(dir, fileMeta), &m); err != nil {
+	if err := s.readJSON(path.Join(dir, fileMeta), &m); errors.Is(err, ErrNewerFormat) {
+		return m, err // the fields this version knows, for the sweeper
+	} else if err != nil {
 		return Meta{}, err
 	}
 	if m.ID != id || m.Size <= 0 || m.ExpiresAt.IsZero() {
@@ -1161,6 +1231,9 @@ func (s *Store) readJSON(name string, v any) error {
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(v); err != nil {
+		if strings.HasPrefix(err.Error(), "json: unknown field ") && json.Unmarshal(data, v) == nil {
+			return ErrNewerFormat
+		}
 		return ErrCorrupt
 	}
 	if dec.More() {

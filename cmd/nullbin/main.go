@@ -56,7 +56,7 @@ func deletePaste(environ []string, id string, out io.Writer) int {
 		fmt.Fprintln(out, "invalid configuration:", err)
 		return 2
 	}
-	store, err := storage.OpenWithLimits(cfg.DataDir, storage.Limits{MaxBytes: cfg.MaxStorage, MaxPending: cfg.MaxPending})
+	store, err := storage.OpenWithLimits(cfg.DataDir, storage.Limits{MaxBytes: cfg.MaxStorage, MaxPending: cfg.MaxPending, MaxPastes: cfg.MaxPastes})
 	if err != nil {
 		fmt.Fprintln(out, "open data directory:", err)
 		return 1
@@ -66,6 +66,9 @@ func deletePaste(environ []string, id string, out io.Writer) int {
 	case err == nil:
 		fmt.Fprintln(out, "Deleted.")
 		return 0
+	case errors.Is(err, storage.ErrNotErased):
+		fmt.Fprintln(out, "The paste can no longer be opened, but some of its files could not be erased. Check that the data volume is writable; Nullbin keeps trying every minute.")
+		return 1
 	case errors.Is(err, storage.ErrNotFound):
 		fmt.Fprintln(out, "No paste with that ID. It may have expired or been deleted already.")
 		return 1
@@ -132,7 +135,7 @@ func run() int {
 			return 1
 		}
 	}
-	store, err := storage.OpenWithLimits(cfg.DataDir, storage.Limits{MaxBytes: cfg.MaxStorage, MaxPending: cfg.MaxPending})
+	store, err := storage.OpenWithLimits(cfg.DataDir, storage.Limits{MaxBytes: cfg.MaxStorage, MaxPending: cfg.MaxPending, MaxPastes: cfg.MaxPastes})
 	if err != nil {
 		logger.Printf("startup: %v", err)
 		return 1
@@ -200,7 +203,7 @@ func sweep(store *storage.Store, srv *server.Server, logger *log.Logger) {
 	st := store.Sweep()
 	srv.Prune()
 	if st != (storage.SweepStats{}) {
-		logger.Printf("sweep: removed %d expired pastes, %d with unreadable metadata, %d stale uploads, %d leftover claims; kept %d it could not check",
-			st.Expired, st.Unreadable, st.StalePending, st.Claimed, st.Errors)
+		logger.Printf("sweep: removed %d expired pastes, %d with unreadable metadata, %d stale uploads, %d leftover claims; kept %d it could not check and %d from a newer version",
+			st.Expired, st.Unreadable, st.StalePending, st.Claimed, st.Errors, st.Newer)
 	}
 }

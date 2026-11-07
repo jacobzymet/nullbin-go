@@ -19,6 +19,7 @@ type config struct {
 	MaxSize        int64
 	MaxStorage     int64
 	MaxPending     int
+	MaxPastes      int
 	BehindHTTPS    bool
 	TrustedProxies []netip.Prefix
 	APIOnly        bool
@@ -37,6 +38,7 @@ var knownVars = map[string]bool{
 	"NULLBIN_MAX_SIZE":        true,
 	"NULLBIN_MAX_STORAGE":     true,
 	"NULLBIN_MAX_PENDING":     true,
+	"NULLBIN_MAX_PASTES":      true,
 	"NULLBIN_BEHIND_HTTPS":    true,
 	"NULLBIN_TRUSTED_PROXIES": true,
 	"NULLBIN_API_ONLY":        true,
@@ -70,6 +72,7 @@ func loadConfig(environ []string) (config, error) {
 		MaxSize:    server.DefaultMaxSize,
 		MaxStorage: storage.DefaultMaxBytes,
 		MaxPending: storage.DefaultMaxPending,
+		MaxPastes:  storage.DefaultMaxPastes,
 	}
 	var errs []error
 	if v := env["NULLBIN_API_ONLY"]; v != "" {
@@ -117,6 +120,13 @@ func loadConfig(environ []string) (config, error) {
 			errs = append(errs, errors.New("NULLBIN_MAX_PENDING: must be an integer from 1 to 4096"))
 		}
 		cfg.MaxPending = n
+	}
+	if v, ok := env["NULLBIN_MAX_PASTES"]; ok {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > 10_000_000 || strconv.Itoa(n) != v {
+			errs = append(errs, errors.New("NULLBIN_MAX_PASTES: must be an integer from 1 to 10000000"))
+		}
+		cfg.MaxPastes = n
 	}
 	if v, ok := env["NULLBIN_BEHIND_HTTPS"]; ok && v != "" {
 		b, err := strconv.ParseBool(v)

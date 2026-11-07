@@ -73,8 +73,12 @@ main() {
     else
       die "not configured yet: run sudo ./nullbin setup paste.example.com (or setup-api for the separate-API layout)"
     fi
-    # Settings come only from the checked file, never from this shell.
-    compose=(env -u DOMAIN -u API_DOMAIN -u FRONTEND_ORIGIN "NULLBIN_IPV6=$ipv6" "${compose[@]}")
+    # Settings come only from the checked file, never from this shell, and
+    # the project is always "nullbin", whatever the environment says.
+    compose=(env -u DOMAIN -u API_DOMAIN -u FRONTEND_ORIGIN -u COMPOSE_PROJECT_NAME -u COMPOSE_FILE
+      -u COMPOSE_ENV_FILES -u COMPOSE_PROFILES "NULLBIN_IPV6=$ipv6" "${compose[@]}" -p nullbin)
+    # Stopping always works, even with a broken settings file.
+    [[ $cmd == stop ]] || check_config
   }
 
   # A lowercase domain name with at least one dot, or localhost for testing.
@@ -97,24 +101,37 @@ main() {
     valid_domain "$host"
   }
 
-  # Prints a setting's value from the configuration file. It must be set
-  # exactly once, as NAME=value on a line of its own.
-  setting() {
-    local name=$1 lines
-    lines=$(as_owner grep -E -- "^[[:space:]]*(export[[:space:]]+)?${name}[[:space:]]*=" "$deploy/$config" || true)
-    [[ -n $lines && $lines != *$'\n'* && $lines == "$name="* ]] ||
-      die "deploy/$config must set $name exactly once, as $name=value at the start of a line"
-    printf '%s' "${lines#*=}"
-  }
-
-  # The domain names end up in the proxy's configuration, so a value edited
-  # by hand is checked as strictly as setup checks it.
+  # Checks the whole settings file before Docker Compose reads it. Compose
+  # accepts more than NAME=value (NAME: value, quotes, values spanning
+  # lines), and a later line overrides an earlier one. Its values reach the
+  # proxy's configuration, where a crafted one could add a site that serves
+  # other code. So every line must be blank, a comment, or NAME=value with
+  # a known name, a plain value and no repeats; then the domains are checked
+  # as strictly as setup checks them.
   check_config() {
+    local allowed line name
+    local -A value=()
     if [[ $config == .env ]]; then
-      valid_domain "$(setting DOMAIN)" || die "DOMAIN in deploy/.env is not a lowercase domain name such as paste.example.com"
+      allowed=" DOMAIN MAX_SIZE MAX_STORAGE MAX_PENDING MAX_PASTES "
     else
-      valid_domain "$(setting API_DOMAIN)" || die "API_DOMAIN in deploy/.env.api is not a lowercase domain name such as api.example.com"
-      valid_origin "$(setting FRONTEND_ORIGIN)" || die "FRONTEND_ORIGIN in deploy/.env.api is not an address such as https://paste.example.com"
+      allowed=" API_DOMAIN FRONTEND_ORIGIN MAX_SIZE MAX_STORAGE MAX_PENDING MAX_PASTES "
+    fi
+    while IFS= read -r line || [[ -n $line ]]; do
+      [[ $line == *[[:cntrl:]]* ]] &&
+        die "deploy/$config contains a control character, often from Windows line endings. Save it with Unix (LF) line endings."
+      [[ $line =~ ^[[:space:]]*(#.*)?$ ]] && continue
+      [[ $line =~ ^([A-Z_]+)=([A-Za-z0-9./:_-]*)$ ]] ||
+        die "deploy/$config: each setting must be one line, NAME=value, with nothing else on it (no quotes, spaces or colon form). This line is not: ${line:0:80}"
+      name=${BASH_REMATCH[1]}
+      [[ $allowed == *" $name "* ]] || die "deploy/$config: $name is not a Nullbin setting"
+      [[ -z ${value[$name]+set} ]] || die "deploy/$config sets $name more than once"
+      value[$name]=${BASH_REMATCH[2]}
+    done < <(as_owner cat -- "$deploy/$config")
+    if [[ $config == .env ]]; then
+      valid_domain "${value[DOMAIN]:-}" || die "DOMAIN in deploy/.env is not a lowercase domain name such as paste.example.com"
+    else
+      valid_domain "${value[API_DOMAIN]:-}" || die "API_DOMAIN in deploy/.env.api is not a lowercase domain name such as api.example.com"
+      valid_origin "${value[FRONTEND_ORIGIN]:-}" || die "FRONTEND_ORIGIN in deploy/.env.api is not an address such as https://paste.example.com"
     fi
   }
 
@@ -166,9 +183,18 @@ main() {
     [[ -n $v && $v != "<no value>" ]] && echo "$v" || echo "unknown (started before v0.2.6)"
   }
 
+  # Files that would be built into Nullbin but did not come with the
+  # release: edits, added files, and files Git ignores inside the folders
+  # the build copies (except the build's own output).
+  local_changes() {
+    g status --porcelain --untracked-files=all
+    g ls-files --others --ignored --exclude-standard -- cmd internal web Dockerfile go.mod \
+      package.json package-lock.json tsconfig.json .npmrc |
+      grep -v -E '^(internal/assets/dist/|web/dist/|web/generated/)' | sed 's/^/!! /' || true
+  }
+
   start() {
-    local version
-    check_config
+    local version changes
     version=$(installed)
     # Configurations from before v0.2.5 hold the old default of 64, which a
     # few client networks could fill with empty uploads.
@@ -176,12 +202,18 @@ main() {
       as_owner sed -i -- 's/^MAX_PENDING=64$/MAX_PENDING=1024/' "$deploy/$config"
       echo "Raised MAX_PENDING in deploy/$config from the old default 64 to the new default 1024."
     fi
+    changes=$(local_changes)
+    [[ -z $changes ]] || echo "Note: these files did not come with Nullbin and will be built in:
+$changes" >&2
+    g describe --tags --exact-match --match 'v[0-9]*.[0-9]*.[0-9]*' >/dev/null 2>&1 ||
+      echo "Note: $version is not a release. To install one: sudo ./nullbin update" >&2
     echo "Building and starting Nullbin $version. The first build takes a few minutes."
-    VERSION=$version "${compose[@]}" up -d --build --wait --wait-timeout 600
+    VERSION=$version "${compose[@]}" up -d --build --remove-orphans --wait --wait-timeout 600
     echo "Nullbin $version is running."
   }
 
-  latest_release() {
+  # owner/name of the GitHub repository this checkout came from.
+  repo_slug() {
     local url slug
     url=$(g remote get-url origin)
     url=${url%.git}
@@ -189,8 +221,22 @@ main() {
     slug=${url#https://github.com/}
     slug=${slug#git@github.com:}
     [[ $slug =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || return 1
+    echo "$slug"
+  }
+
+  latest_release() {
+    local slug
+    slug=$(repo_slug) || return 1
     curl -fsSL "https://api.github.com/repos/$slug/releases/latest" |
       grep -o '"tag_name": *"[^"]*"' | head -n 1 | cut -d '"' -f 4
+  }
+
+  # The HTTP status GitHub gives for a release with this tag: 200 if it is
+  # published, 404 if not, anything else (000 = no connection) if unknown.
+  release_status() {
+    local slug
+    slug=$(repo_slug) || { echo 000; return; }
+    curl -s -o /dev/null -w '%{http_code}' --max-time 20 "https://api.github.com/repos/$slug/releases/tags/$1" || true
   }
 
   case $cmd in
@@ -232,26 +278,47 @@ main() {
       echo "Target:    $target"
       # Git refuses to move a release tag that already exists here, so a tag
       # changed on GitHub after release is never followed.
-      g fetch --quiet --tags origin || echo "Could not fetch new releases (see the message above); using releases already downloaded."
+      g fetch --quiet --tags origin "+refs/heads/main:refs/remotes/origin/main" ||
+        echo "Could not fetch new releases (see the message above); using releases already downloaded."
       g rev-parse --quiet --verify "refs/tags/$target^{commit}" >/dev/null || die "release $target was not found"
+      # Only a published release from the main branch is installed, never a
+      # tag pushed by mistake or by someone who took over an account.
+      if [[ ${NULLBIN_TEST_UNRELEASED:-} == 1 ]]; then
+        echo "NULLBIN_TEST_UNRELEASED=1: not checking that $target is a release (for testing only)." >&2
+      else
+        g merge-base --is-ancestor "refs/tags/$target^{commit}" refs/remotes/origin/main 2>/dev/null ||
+          die "$target is not on Nullbin's main branch, so it is not a release"
+        case $(release_status "$target") in
+          200) ;;
+          404) die "$target is not a published release. See the Releases page on GitHub." ;;
+          *) echo "Could not ask GitHub whether $target is a published release; installing it because it is on the main branch." >&2 ;;
+        esac
+      fi
       # Edited files would be overwritten, and files added to the checkout
-      # would be built into Nullbin along with the release. Settings files
-      # are ignored by Git, so they do not count.
-      changes=$(g status --porcelain --untracked-files=all)
-      [[ -z $changes ]] || die "the checkout has edited or added files, which the update would overwrite or build in:
+      # would be built into Nullbin along with the release. The settings
+      # file is ignored by Git and checked separately.
+      changes=$(local_changes)
+      [[ -z $changes ]] || die "the checkout has files that did not come with Nullbin, which the update would overwrite or build in:
 $changes
-See them with: git -C $repo status
-Set them aside with: git -C $repo stash --include-untracked"
-      local previous
+See them with: git -C $repo status --ignored
+Set them aside with: git -C $repo stash --include-untracked (and move ignored ones elsewhere)"
+      local previous snapshot=$deploy/$config.before-update
       previous=$(g rev-parse HEAD)
+      as_owner cp -p -- "$deploy/$config" "$snapshot"
       g -c advice.detachedHead=false checkout --quiet "$target"
       # Start with the release's own copy of this script, so changes to how
       # Nullbin starts take effect with the update that brings them.
       if "$deploy/nullbin" start; then
+        as_owner rm -f -- "$snapshot"
         exit 0
       fi
+      # Remove everything the failed version started, then put back the
+      # code and the settings exactly as they were.
       echo "nullbin: $target did not start; going back to $current." >&2
+      "${compose[@]}" down --remove-orphans || true
       g -c advice.detachedHead=false checkout --quiet "$previous"
+      as_owner cp -p -- "$snapshot" "$deploy/$config"
+      as_owner rm -f -- "$snapshot"
       "$deploy/nullbin" start || die "$current did not start either. See what went wrong with: sudo ./nullbin logs"
       die "the update to $target failed, and $current is running again. See what went wrong with: sudo ./nullbin logs"
       ;;

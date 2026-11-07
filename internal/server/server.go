@@ -162,14 +162,14 @@ func New(cfg Config) *Server {
 	}
 
 	// API. Every route declares its maximum body size; most take none.
-	mux.Handle("POST /api/v1/pastes", s.route(maxCreateBody, s.creates, s.writing(s.handleCreate)))
+	mux.Handle("POST /api/v1/pastes", s.route(maxCreateBody, s.creates, s.handleCreate))
 	mux.Handle("PUT /api/v1/pastes/{id}/chunks/{n}", s.route(maxChunkBody, s.uploads, s.handleChunk))
-	mux.Handle("POST /api/v1/pastes/{id}/finalize", s.route(0, s.uploads, s.writing(s.handleFinalize)))
+	mux.Handle("POST /api/v1/pastes/{id}/finalize", s.route(0, s.uploads, s.handleFinalize))
 	mux.Handle("GET /api/v1/pastes/{id}", s.route(0, s.downloads, s.handleGet))
 	mux.Handle("GET /api/v1/pastes/{id}/prefix", s.route(0, s.downloads, s.handleBurnPrefix))
 	mux.Handle("POST /api/v1/pastes/{id}/read", s.route(0, s.downloads, s.handleReadBurn))
-	mux.Handle("DELETE /api/v1/pastes/{id}", s.route(0, s.deletes, s.writing(s.handleDelete)))
-	mux.Handle("POST /api/v1/pastes/{id}/comments", s.route(storage.MaxCommentBytes, s.comments, s.writing(s.handleAddComment)))
+	mux.Handle("DELETE /api/v1/pastes/{id}", s.route(0, s.deletes, s.handleDelete))
+	mux.Handle("POST /api/v1/pastes/{id}/comments", s.route(storage.MaxCommentBytes, s.comments, s.handleAddComment))
 	mux.Handle("GET /api/v1/pastes/{id}/comments", s.route(0, s.downloads, s.handleComments))
 	mux.Handle("GET /api/v1/version", s.route(0, s.pages, s.handleVersion))
 
@@ -216,6 +216,7 @@ func (s *Server) Prune() {
 		s.pending.reconcile(ids, now)
 	}
 	s.creates.prune(now)
+	s.deletes.prune(now)
 	s.uploads.prune(now)
 	s.comments.prune(now)
 	s.pages.prune(now)
@@ -381,6 +382,11 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		}
 		reads = *req.MaxReads
 	}
+	release, ok := s.writeSlot(w, r)
+	if !ok {
+		return
+	}
+	defer release()
 	ip := s.ips.clientIP(r)
 	if !s.pending.reserve(ip, s.nowFunc()) {
 		w.Header().Set("Retry-After", "60")
@@ -476,6 +482,11 @@ func (s *Server) handleFinalize(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not found")
 		return
 	}
+	release, ok := s.writeSlot(w, r)
+	if !ok {
+		return
+	}
+	defer release()
 	m, err := s.cfg.Store.Finalize(id, r.Header.Get(UploadTokenHeader))
 	switch {
 	case err == nil:
@@ -550,6 +561,9 @@ func (s *Server) download(w http.ResponseWriter, r *http.Request, burn bool) {
 	}
 	var p *storage.Paste
 	var err error
+	if burn && r.Context().Err() != nil {
+		return // the reader already left: never use up an open for nobody
+	}
 	if burn {
 		p, err = s.cfg.Store.ReadBurn(id, r.Header.Get(BurnTokenHeader))
 	} else {
@@ -593,9 +607,18 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not found")
 		return
 	}
+	release, ok := s.writeSlot(w, r)
+	if !ok {
+		return
+	}
+	defer release()
 	err := s.cfg.Store.Delete(id, r.Header.Get(DeleteTokenHeader))
 	switch {
 	case err == nil:
+		w.WriteHeader(http.StatusNoContent)
+	case errors.Is(err, storage.ErrNotErased):
+		// It can no longer be read; the sweeper keeps trying to erase it.
+		s.logger.Printf("error: delete: %s", describeError(err))
 		w.WriteHeader(http.StatusNoContent)
 	case errors.Is(err, storage.ErrNotFound):
 		writeError(w, http.StatusNotFound, "not found")
@@ -629,6 +652,13 @@ func (s *Server) handleAddComment(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "comment too short")
 		return
 	}
+	// The body is read in full before taking a place: a client that sends
+	// slowly must never hold one.
+	release, ok := s.writeSlot(w, r)
+	if !ok {
+		return
+	}
+	defer release()
 	n, err := s.cfg.Store.AddComment(id, r.Header.Get(CommentTokenHeader), body)
 	switch {
 	case err == nil:
@@ -809,24 +839,24 @@ func (rr *readErrRecorder) Read(p []byte) (int, error) {
 	return n, err
 }
 
-// writing runs h once one of the diskWritesTotal places for disk-writing
-// requests is free, waiting at most diskWriteWait. Each such request can
-// hold an operating-system thread in fsync; without a bound, a burst of
-// them could reach the container's thread limit.
-func (s *Server) writing(h http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		timer := time.NewTimer(diskWriteWait)
-		defer timer.Stop()
-		select {
-		case s.diskWrites <- struct{}{}:
-		case <-timer.C:
-			w.Header().Set("Retry-After", "5")
-			writeError(w, http.StatusServiceUnavailable, "server busy")
-			return
-		case <-r.Context().Done():
-			return
-		}
-		defer func() { <-s.diskWrites }()
-		h(w, r)
+// writeSlot takes one of the diskWritesTotal places for a request that
+// writes to disk, waiting at most diskWriteWait. Each such request can hold
+// an operating-system thread in fsync; without a bound, a burst of them
+// could reach the container's thread limit. Take it only around the storage
+// call, after the request has been read and checked: a client controls how
+// slowly it sends, and must never hold a place while doing so. On failure
+// it has answered the request; otherwise call release when done.
+func (s *Server) writeSlot(w http.ResponseWriter, r *http.Request) (release func(), ok bool) {
+	timer := time.NewTimer(diskWriteWait)
+	defer timer.Stop()
+	select {
+	case s.diskWrites <- struct{}{}:
+		return func() { <-s.diskWrites }, true
+	case <-timer.C:
+		w.Header().Set("Retry-After", "5")
+		writeError(w, http.StatusServiceUnavailable, "server busy")
+		return nil, false
+	case <-r.Context().Done():
+		return nil, false
 	}
 }

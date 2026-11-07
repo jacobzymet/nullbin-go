@@ -35,7 +35,7 @@ test('no source, config or doc file contains invisible or direction-changing cha
     readFileSync(file, 'utf8').split('\n').forEach((line, i) => {
       for (const ch of line) {
         const cp = ch.codePointAt(0)!;
-        if (hidden.has(cp) || (cp >= 0xe0000 && cp <= 0xe007f)) {
+        if (hidden.has(cp) || /\p{Cf}/u.test(ch)) {
           found.push(`${path.relative(root, file)}:${i + 1} U+${cp.toString(16).toUpperCase()}`);
         }
       }

@@ -157,8 +157,12 @@ export function parseMeta(bytes: Uint8Array, final: boolean, hasPassword: boolea
   throw bad();
 }
 
-/** How long a download may go without receiving anything. */
-export const STALL_MS = 60_000;
+/**
+ * How long a download may go without receiving any data. Longer than the
+ * server's own 2-minute grace period, so the server always gives up first:
+ * the page must never abandon a burn paste the server would still deliver.
+ */
+export const STALL_MS = 150_000;
 
 /**
  * Reads on demand, keeping at most one unread network chunk. Password and
@@ -179,31 +183,38 @@ export class ByteReader {
   }
 
   private async fill(): Promise<void> {
-    while (this.chunk.length === 0 && !this.finished) {
-      // A server that stops sending must not leave the page waiting forever.
-      // Only time spent waiting for the network counts: while a password or
-      // save dialog is open, nothing is being read.
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      const stalled = new Promise<never>((_, reject) => {
-        timer = setTimeout(() => {
-          void this.reader.cancel().catch(() => {});
-          reject(new Error('stalled'));
-        }, STALL_MS);
-      });
-      try {
-        const { done, value } = await Promise.race([this.reader.read(), stalled]);
+    if (this.chunk.length > 0 || this.finished) return;
+    // A server that stops sending must not leave the page waiting forever.
+    // Only time spent waiting for the network counts: while a password or
+    // save dialog is open, nothing is being read. One deadline covers the
+    // whole wait, so empty pieces of data cannot keep extending it.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let stalled = false;
+    const deadline = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        stalled = true;
+        void this.reader.cancel().catch(() => {});
+        reject(new Error('stalled'));
+      }, STALL_MS);
+    });
+    try {
+      while (this.chunk.length === 0 && !this.finished) {
+        const { done, value } = await Promise.race([this.reader.read(), deadline]);
+        if (stalled) break;
         this.finished = done;
         if (!done) {
           this.chunk = value;
           this.received += value.length;
           this.onProgress?.(this.received);
         }
-      } catch {
-        throw new PasteError('network', 'The download failed.');
-      } finally {
-        clearTimeout(timer);
       }
+    } catch {
+      if (!stalled) throw new PasteError('network', 'The download failed.');
+    } finally {
+      clearTimeout(timer);
     }
+    // Cancelling can end the stream as if it were complete; report the stall.
+    if (stalled) throw new PasteError('network', 'The download stopped: no data arrived for over two minutes.');
   }
 
   async cancel(): Promise<void> {

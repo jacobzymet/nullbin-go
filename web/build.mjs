@@ -130,6 +130,11 @@ const ids = [...html.matchAll(/\sid="([^"]+)"/g)].map((m) => m[1]);
 const dup = ids.find((id, i) => ids.indexOf(id) !== i);
 if (dup) fail(`index.html has a duplicate id: ${dup}`);
 html = html.replace('__JS_INTEGRITY__', sri(jsBytes)).replace('__CSS_INTEGRITY__', sri(cssBytes));
+// Every script and stylesheet must carry the integrity hash of its bytes.
+const tags = [...html.matchAll(/<(script|link)\b[^>]*>/gi)].map((m) => m[0]).filter((t) => /\s(src|href)="\/assets\//.test(t));
+if (tags.length !== 2 || !tags.every((t) => t.includes(`integrity="${t.startsWith('<script') ? sri(jsBytes) : sri(cssBytes)}"`))) {
+  fail('index.html must load exactly app.js and app.css, each with its integrity hash');
+}
 // The footer's Version link opens the API's version endpoint. With a
 // separately hosted API that is on another origin, fixed at build time.
 const versionLink = 'href="/api/v1/version"';
@@ -168,6 +173,9 @@ const staticHTML = html
   .replace(charset, `${charset}
 <meta http-equiv="Content-Security-Policy" content="${metaPolicy}">`)
   .replace('/assets/app.js', `/assets/${jsName}`).replace('/assets/app.css', `/assets/${cssName}`);
+if (staticHTML.split('<meta http-equiv="Content-Security-Policy"').length !== 2 || staticHTML.indexOf('http-equiv="Content-Security-Policy"') > staticHTML.indexOf('<link')) {
+  fail('the static index.html must carry its Content-Security-Policy once, before any stylesheet or script');
+}
 await writeFile(path.join(staticDir, 'index.html'), staticHTML);
 await writeFile(path.join(staticDir, 'assets', jsName), jsBytes);
 await writeFile(path.join(staticDir, 'assets', cssName), cssBytes);

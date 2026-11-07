@@ -13,6 +13,10 @@ const (
 	// arrives, so many can be allowed; that makes holding them all take
 	// many client networks (see the server's per-client limits).
 	DefaultMaxPending = 1024
+	// Each paste takes about four inodes. On a dedicated volume sized for
+	// the budget, many tiny pastes would run out of inodes long before
+	// bytes, and then every write fails; this cap makes that a clean "full".
+	DefaultMaxPastes = 100_000
 	// Charge for directory entries, metadata, block rounding and atomic
 	// replacement files, including the transient finalize metadata.
 	entryOverhead = 32 << 10
@@ -26,6 +30,7 @@ var (
 type Limits struct {
 	MaxBytes   int64
 	MaxPending int
+	MaxPastes  int // published, unfinished and being-deleted pastes together; 0 means the default
 }
 
 type allocation struct {
@@ -67,6 +72,9 @@ func (s *Store) reserve(dir string, need int64) error {
 	defer s.quotaMu.Unlock()
 	if s.pending >= s.limits.MaxPending {
 		return ErrUploadLimit
+	}
+	if len(s.allocations) >= s.limits.MaxPastes {
+		return ErrQuota
 	}
 	if s.used > s.limits.MaxBytes || max(need, n) > s.limits.MaxBytes-s.used {
 		return ErrQuota
@@ -196,23 +204,23 @@ func (s *Store) rebuildAllocations() error {
 			if err != nil {
 				return err
 			}
+			// The bytes on disk are always charged. Valid metadata can only
+			// raise that; invalid values are ignored rather than stopping the
+			// server from starting (the sweeper deals with such entries).
 			reserved := physical
 			if parent == dirPending {
 				var u upload
-				if s.readJSON(path.Join(dir, fileUpload), &u) == nil {
-					if u.Received < 0 || u.Received > math.MaxInt64-entryOverhead {
-						return ErrQuota
+				if err := s.readJSON(path.Join(dir, fileUpload), &u); err == nil || errors.Is(err, ErrNewerFormat) {
+					if u.Received >= 0 && u.Received <= math.MaxInt64-entryOverhead {
+						reserved = max(reserved, entryOverhead+u.Received)
 					}
-					reserved = max(reserved, entryOverhead+u.Received)
 				}
 			} else {
 				var m Meta
-				if s.readJSON(path.Join(dir, fileMeta), &m) == nil {
-					n, err := allocationSize(m.Size)
-					if err != nil {
-						return err
+				if err := s.readJSON(path.Join(dir, fileMeta), &m); err == nil || errors.Is(err, ErrNewerFormat) {
+					if n, err := allocationSize(m.Size); err == nil && n <= math.MaxInt64-comments {
+						reserved = max(reserved, n+comments)
 					}
-					reserved = max(reserved, n+comments)
 				}
 			}
 			if reserved > math.MaxInt64-s.used {

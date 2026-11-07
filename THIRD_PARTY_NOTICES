@@ -135,6 +135,12 @@ Container image
    data, netbase). Their copyright and license files are inside the image
    under /usr/share/doc/.
 
+8. The HTTPS proxy image (deploy layouts) contains Caddy 2.11.8
+   (https://caddyserver.com), Apache License 2.0, copied from the official
+   caddy image. The Go modules compiled into it carry their own licenses
+   (mostly Apache-2.0, MIT and BSD); run "caddy build-info" in the proxy
+   image to list them. Its base is the same distroless image as item 7.
+
 Build and test tools (not distributed)
 --------------------------------------
 

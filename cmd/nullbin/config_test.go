@@ -27,6 +27,7 @@ func TestConfigValid(t *testing.T) {
 		"NULLBIN_MAX_SIZE=2GiB",
 		"NULLBIN_MAX_STORAGE=20GiB",
 		"NULLBIN_MAX_PENDING=12",
+		"NULLBIN_MAX_PASTES=5000",
 		"NULLBIN_BEHIND_HTTPS=true",
 		"NULLBIN_TRUSTED_PROXIES=10.0.0.0/8, 192.0.2.1 ,fd00::/8,::1",
 	})
@@ -42,7 +43,7 @@ func TestConfigValid(t *testing.T) {
 			t.Errorf("proxy %d = %v, want %s", i, p, want[i])
 		}
 	}
-	if cfg.ListenAddr != ":8080" || cfg.DataDir != "/data" || cfg.MaxSize != 2<<30 || cfg.MaxStorage != 20<<30 || cfg.MaxPending != 12 || !cfg.BehindHTTPS {
+	if cfg.ListenAddr != ":8080" || cfg.DataDir != "/data" || cfg.MaxSize != 2<<30 || cfg.MaxStorage != 20<<30 || cfg.MaxPending != 12 || cfg.MaxPastes != 5000 || !cfg.BehindHTTPS {
 		t.Fatalf("config %+v", cfg)
 	}
 	// Empty values fall back to defaults for the optional switches.
@@ -69,6 +70,9 @@ func TestConfigRejectsBadValues(t *testing.T) {
 		"NULLBIN_MAX_PENDING=4097",
 		"NULLBIN_MAX_PENDING=1.5",
 		"NULLBIN_MAX_PENDING=+2",
+		"NULLBIN_MAX_PASTES=0",
+		"NULLBIN_MAX_PASTES=10000001",
+		"NULLBIN_MAX_PASTES=1e5",
 		"NULLBIN_MAX_SIZE=",
 		"NULLBIN_MAX_SIZE=0",
 		"NULLBIN_MAX_SIZE=-1",

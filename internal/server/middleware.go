@@ -133,6 +133,8 @@ func describeError(err error) string {
 		errors.Is(err, storage.ErrIncomplete),
 		errors.Is(err, storage.ErrEmptyChunk),
 		errors.Is(err, storage.ErrChunkTooSmall),
+		errors.Is(err, storage.ErrNotErased),
+		errors.Is(err, storage.ErrNewerFormat),
 		errors.Is(err, io.ErrUnexpectedEOF):
 		return err.Error()
 	}

@@ -7,6 +7,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -1186,4 +1187,150 @@ func TestCommentsRefuseALinkedDirectory(t *testing.T) {
 	if _, err := s.AddComment(attacker.ID, token, make([]byte, 100)); !errors.Is(err, ErrCorrupt) {
 		t.Fatalf("comment through a link: %v", err)
 	}
+	if _, err := s.Comments(attacker.ID, token); !errors.Is(err, ErrCorrupt) {
+		t.Fatalf("comments read through a link: %v", err)
+	}
+}
+
+// After a rollback, pastes written by a newer release can carry metadata
+// fields this version does not know. They must be kept (not served) until
+// they expire, never deleted as corrupt.
+func TestPastesFromANewerVersionAreKept(t *testing.T) {
+	s, clk, dir := newTestStore(t)
+	c := publish(t, s, testContent, false, time.Hour, 1000)
+	meta := filepath.Join(dir, "pastes", c.ID, "meta.json")
+	raw, err := os.ReadFile(meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatal(err)
+	}
+	m["a_future_field"] = true
+	raw, _ = json.Marshal(m)
+	if err := os.WriteFile(meta, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if st := s.Sweep(); st.Newer != 1 || st.Unreadable != 0 || st.Expired != 0 {
+		t.Fatalf("sweep stats %+v", st)
+	}
+	if _, err := s.Get(c.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("served a paste from a newer version: %v", err)
+	}
+	clk.mu.Lock()
+	clk.t = clk.t.Add(2 * time.Hour)
+	clk.mu.Unlock()
+	if st := s.Sweep(); st.Expired != 1 {
+		t.Fatalf("an expired paste from a newer version was kept: %+v", st)
+	}
+}
+
+// A gap in the comment files (one removed by hand) must never make a new
+// comment replace an existing one.
+func TestCommentNamesContinueAfterTheHighest(t *testing.T) {
+	s, _, dir := newTestStore(t)
+	c, token := publishDiscussion(t, s)
+	for _, b := range []string{"first", "second"} {
+		if _, err := s.AddComment(c.ID, token, []byte(b)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cdir := filepath.Join(dir, "pastes", c.ID, "comments")
+	if err := os.Remove(filepath.Join(cdir, "000001")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AddComment(c.ID, token, []byte("third")); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(filepath.Join(cdir, "000002")); string(got) != "second" {
+		t.Fatalf("an existing comment was replaced: %q", got)
+	}
+	if got, _ := os.ReadFile(filepath.Join(cdir, "000003")); string(got) != "third" {
+		t.Fatalf("new comment: %q", got)
+	}
+}
+
+func TestMaxPastesRefusesNewUploads(t *testing.T) {
+	s, err := OpenWithLimits(t.TempDir(), Limits{MaxBytes: DefaultMaxBytes, MaxPending: 10, MaxPastes: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	for range 2 {
+		if _, err := s.CreatePending(time.Hour, false, 100, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.CreatePending(time.Hour, false, 100, ""); !errors.Is(err, ErrQuota) {
+		t.Fatalf("third paste with a cap of two: %v", err)
+	}
+}
+
+// A chunk is charged as its bytes arrive, so one that sends nothing holds
+// at most one segment of the budget, not the whole chunk.
+func TestChunkIsChargedAsBytesArrive(t *testing.T) {
+	s, _, _ := newTestStore(t)
+	c, err := s.CreatePending(time.Hour, false, MaxChunkBytes, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pr, pw := io.Pipe()
+	done := make(chan error, 1)
+	go func() { done <- s.AppendChunk(c.ID, 0, c.UploadToken, pr) }()
+	time.Sleep(100 * time.Millisecond)
+	s.quotaMu.Lock()
+	used := s.used
+	s.quotaMu.Unlock()
+	if used > entryOverhead+1<<20 {
+		t.Fatalf("a chunk that sent nothing is charged %d bytes", used)
+	}
+	pw.CloseWithError(errors.New("client went away"))
+	if err := <-done; err == nil {
+		t.Fatal("an interrupted chunk succeeded")
+	}
+	if s.used != entryOverhead {
+		t.Fatalf("an interrupted chunk left %d bytes charged", s.used-entryOverhead)
+	}
+}
+
+// A one-open burn paste whose open is recorded as used is never served,
+// even if its directory is still there.
+func TestUsedUpBurnPasteIsNotServed(t *testing.T) {
+	s, _, dir := newTestStore(t)
+	c := publish(t, s, testContent, true, time.Hour, 1000)
+	pdir := path.Join(dirPastes, c.ID)
+	m, err := s.readMeta(pdir, c.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.ReadLimit, m.ReadsUsed = 1, 1
+	if err := s.writeJSON(pdir, fileMeta, m); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ReadBurn(c.ID, testBurnToken); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("used-up burn paste: %v", err)
+	}
+	_ = dir
+}
+
+// Invalid sizes in one paste's metadata must not stop the server starting.
+func TestStartupToleratesInvalidSizes(t *testing.T) {
+	s, _, dir := newTestStore(t)
+	c := publish(t, s, testContent, false, time.Hour, 1000)
+	meta := filepath.Join(dir, "pastes", c.ID, "meta.json")
+	raw, _ := os.ReadFile(meta)
+	var m map[string]any
+	json.Unmarshal(raw, &m)
+	m["size"] = -5
+	raw, _ = json.Marshal(m)
+	if err := os.WriteFile(meta, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	s2, err := Open(dir)
+	if err != nil {
+		t.Fatalf("one invalid paste stopped startup: %v", err)
+	}
+	s2.Close()
 }

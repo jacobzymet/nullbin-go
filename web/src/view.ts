@@ -6,7 +6,7 @@ import { ApiError, fetchBurnPrefix, fetchPaste } from './api.ts';
 import { CloneableAttachment, MAX_BUFFERED_DOWNLOAD } from './attachments.ts';
 import { burnAccessToken, deriveKey, openPaste, type OpenedPaste } from './crypto.ts';
 import { initDiscussion } from './discussion.ts';
-import { hasHiddenChars } from './hidden.ts';
+import { hasHiddenChars, stripHiddenChars } from './hidden.ts';
 import {
   Progress,
   announce,
@@ -199,7 +199,7 @@ function renderFile(file: AsyncGenerator<Uint8Array>, filename: string | null, s
   // Show the name that will be saved, so bidi controls cannot disguise it.
   el('view-filename').textContent = safeFilename(filename);
   el('view-filesize').textContent = formatBytes(size);
-  el('view-mime').textContent = mime ?? 'type not given';
+  el('view-mime').textContent = mime ? stripHiddenChars(mime) || 'type not given' : 'type not given';
   const save = el<HTMLButtonElement>('save-file');
   const clone = el<HTMLButtonElement>('view-clone');
   const attachment = new CloneableAttachment(file, safeFilename(filename), size, mime ?? '');
@@ -352,7 +352,7 @@ async function saveWithBlob(file: AsyncGenerator<Uint8Array>, name: string, size
  */
 export function safeFilename(name: string | null): string {
   const cleaned = (name ?? '')
-    .replace(/[\u0000-\u001f\u007f-\u009f\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069/\\:*?"<>|]/g, '_')
+    .replace(/[\p{Cf}\p{Cc}/\\:*?"<>|]/gu, '_')
     .replace(/^[.\s]+/, '')
     .trim();
   return cleaned.slice(0, 200) || 'download';

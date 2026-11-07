@@ -7,6 +7,12 @@ import { parseTokenFragment } from './link.ts';
 export function initDelete(id: string, fragment: string): void {
   const token = parseTokenFragment(fragment);
   if (!token) {
+    // Before v0.2.6 a delete link held only the token, which looks exactly
+    // like a share link's key; those are refused so a key is never sent.
+    if (/^#[A-Za-z0-9_-]{43}$/.test(fragment)) {
+      showProblem('This delete link is from an older version', 'Delete links made before this server was updated can no longer be used here, so that a share link can never be mistaken for one. The paste still expires on its own.');
+      return;
+    }
     showProblem('This delete link is incomplete', 'The part after # is missing or damaged. Use the full delete link you got when the paste was created.');
     return;
   }

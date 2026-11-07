@@ -298,7 +298,7 @@ test('every page loads under the CSP with no external requests', async () => {
     [`${origin}/`, '#create', null],
     [`${origin}/p/${id}`, '#problem', /incomplete/],
     [`${origin}/d/${id}`, '#problem', /incomplete/],
-    [`${origin}/d/${id}#${'A'.repeat(43)}`, '#problem', /incomplete/],
+    [`${origin}/d/${id}#${'A'.repeat(43)}`, '#problem', /older version/],
     [`${origin}/d/${id}#d.${'A'.repeat(43)}`, '#delete', null],
   ];
   for (const [url, visible, problem] of pages) {

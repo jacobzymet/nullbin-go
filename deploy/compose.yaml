@@ -29,7 +29,7 @@ services:
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
     # Process limit (threads count). Generous for full load; stops a runaway.
-    pids_limit: 2048
+    pids_limit: 4096
     environment:
       NULLBIN_API_ONLY: "true"
       NULLBIN_BEHIND_HTTPS: "true"
@@ -39,6 +39,7 @@ services:
       NULLBIN_MAX_SIZE: ${MAX_SIZE:-100MiB}
       NULLBIN_MAX_STORAGE: ${MAX_STORAGE:-10GiB}
       NULLBIN_MAX_PENDING: ${MAX_PENDING:-1024}
+      NULLBIN_MAX_PASTES: ${MAX_PASTES:-100000}
     volumes:
       - nullbin-data:/data
     networks:

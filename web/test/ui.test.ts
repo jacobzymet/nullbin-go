@@ -89,6 +89,7 @@ test('safeFilename strips paths and control characters', () => {
     ['a\u0000b\nc.txt', 'a_b_c.txt'],
     ['invoice\u202Efdp.exe', 'invoice_fdp.exe'], // right-to-left override hides the real extension
     ['x\u2066y\u200Fz', 'x_y_z'],
+    ['a\u00ADb\u2061c\uFFF9d.txt', 'a_b_c_d.txt'], // soft hyphen, invisible operator, annotation
     ['con:name?.txt', 'con_name_.txt'],
     ['', 'download'],
     [null, 'download'],
@@ -195,7 +196,8 @@ test('upload chunks meet the server minimum and maximum', () => {
 test('text that can look different from what it contains is flagged', () => {
   // Trojan Source: an override makes a line display reversed.
   assert.equal(hasHiddenChars('if (admin) {\u202E } \u2066// check\u2069'), true);
-  for (const c of ['\u061C', '\u200B', '\u200E', '\u200F', '\u202A', '\u202E', '\u2060', '\u2066', '\u2069', '\uFEFF', '\u{E0041}']) {
+  for (const c of ['\u061C', '\u200B', '\u200E', '\u200F', '\u202A', '\u202E', '\u2060', '\u2066', '\u2069', '\uFEFF', '\u{E0041}',
+    '\u00AD', '\u2061', '\u2064', '\u206A', '\u206F', '\u180E', '\uFFF9', '\uFFFB', '\u0008', '\u001B']) {
     assert.equal(hasHiddenChars(`a${c}b`), true, `U+${c.codePointAt(0)!.toString(16)} must be flagged`);
   }
   // Ordinary text, accents, right-to-left scripts, emoji and a leading BOM are fine.

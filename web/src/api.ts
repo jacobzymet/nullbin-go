@@ -16,7 +16,7 @@ export const MAX_BURN_READS = 1000;
 /** Deadlines, so a server that stops answering cannot leave the page waiting forever. */
 const REQUEST_MS = 60_000;
 const CHUNK_MS = 6 * 60_000; // the server allows a chunk 5 minutes
-const COMMENTS_MS = 2 * 60_000; // a full discussion is about 9 MB
+const COMMENTS_MS = 6 * 60_000; // the server allows a full discussion (about 9 MB) about 5.5 minutes
 
 const base: RequestInit = {
   credentials: 'omit',
@@ -110,12 +110,24 @@ export async function putChunk(id: string, n: number, uploadToken: string, data:
   }
 }
 
+/**
+ * Publishes a finished upload. A busy or rate-limited server is retried,
+ * honouring Retry-After: giving up would throw away the whole upload.
+ */
 export async function finalizePaste(id: string, uploadToken: string): Promise<Date | null> {
-  const resp = await fetch(apiURL(`/api/v1/pastes/${id}/finalize`), {
-    ...base, signal: AbortSignal.timeout(REQUEST_MS),
-    method: 'POST',
-    headers: { 'Nullbin-Upload-Token': uploadToken },
-  });
+  let resp: Response;
+  for (let attempt = 0; ; attempt++) {
+    resp = await fetch(apiURL(`/api/v1/pastes/${id}/finalize`), {
+      ...base, signal: AbortSignal.timeout(REQUEST_MS),
+      method: 'POST',
+      headers: { 'Nullbin-Upload-Token': uploadToken },
+    });
+    const retryable = resp.status === 409 || resp.status === 429 || resp.status === 503;
+    if (!retryable || attempt >= 4) break;
+    const after = Number(resp.headers.get('Retry-After'));
+    await resp.body?.cancel();
+    await sleep(Number.isFinite(after) && after > 0 ? Math.min(after, 30) * 1000 : 1000 * 2 ** attempt);
+  }
   if (resp.status !== 200) throw await errorFrom(resp);
   const v = (await resp.json()) as Record<string, unknown>;
   const d = typeof v['expires_at'] === 'string' ? new Date(v['expires_at']) : null;

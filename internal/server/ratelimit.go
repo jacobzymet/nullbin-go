@@ -69,15 +69,30 @@ func (l *limiter) allow(ip netip.Addr, now time.Time) (bool, time.Duration) {
 	return l.allowN(ip, now, 1)
 }
 
+// allowN takes cost tokens for ip, and for its /48 when there is a site
+// limit. The client is checked first, so requests it refuses never use up
+// the /48's tokens: one busy network cannot drain its neighbours' share.
 func (l *limiter) allowN(ip netip.Addr, now time.Time, cost float64) (bool, time.Duration) {
-	if l.site != nil {
-		if k, isV6 := l.site.hashSite(ip); isV6 {
-			if ok, wait := l.site.take(k, now, cost); !ok {
-				return false, wait
-			}
+	k := l.hash(ip)
+	if ok, wait := l.take(k, now, cost); !ok || l.site == nil {
+		return ok, wait
+	}
+	if sk, isV6 := l.site.hashSite(ip); isV6 {
+		if ok, wait := l.site.take(sk, now, cost); !ok {
+			l.refund(k, cost)
+			return false, wait
 		}
 	}
-	return l.take(l.hash(ip), now, cost)
+	return true, 0
+}
+
+// refund returns tokens taken for a request that was refused later.
+func (l *limiter) refund(k [16]byte, cost float64) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if b := l.buckets[k]; b != nil {
+		b.tokens = min(l.burst, b.tokens+cost)
+	}
 }
 
 func (l *limiter) take(k [16]byte, now time.Time, cost float64) (bool, time.Duration) {

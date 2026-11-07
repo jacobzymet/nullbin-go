@@ -21,7 +21,8 @@ internal/assets/dist/*
 !internal/assets/dist/.gitkeep
 *.test
 *.out
-coverage.*
+coverage.out
+coverage.html
 
 # Dependencies
 node_modules/

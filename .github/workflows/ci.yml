@@ -190,6 +190,9 @@ jobs:
 
   deploy-bundle:
     name: Deploy bundle (Caddy + HTTPS) smoke test
+    # Runs the helper script as root on the runner: not for pull requests
+    # from forks, whose code a maintainer has not reviewed yet.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -365,11 +368,18 @@ jobs:
           git tag v9.9.9
           # Earlier steps left scratch files in the checkout; a server's has none.
           git -C .. clean -fdq
-          # A file added to the checkout would be built in, so update refuses.
-          touch ../internal/server/zz_added.go
+          # Only published releases on main are installed; this tag is neither.
           if sudo ./nullbin update v9.9.9; then exit 1; fi
+          # Files the release did not bring would be built in, so update
+          # refuses: an added file, and an ignored file in a folder the
+          # build copies.
+          touch ../internal/server/zz_added.go
+          if sudo NULLBIN_TEST_UNRELEASED=1 ./nullbin update v9.9.9; then exit 1; fi
           rm ../internal/server/zz_added.go
-          sudo ./nullbin update v9.9.9 | tee "$RUNNER_TEMP/update.txt"
+          touch ../internal/server/coverage.out
+          if sudo NULLBIN_TEST_UNRELEASED=1 ./nullbin update v9.9.9; then exit 1; fi
+          rm ../internal/server/coverage.out
+          sudo NULLBIN_TEST_UNRELEASED=1 ./nullbin update v9.9.9 | tee "$RUNNER_TEMP/update.txt"
           grep -q 'Nullbin v9.9.9 is running' "$RUNNER_TEMP/update.txt"
           curl -fsSk https://localhost/api/v1/version | grep -q '"version":"v9.9.9"'
           curl -fsSk https://localhost/ | grep -q '>Nullbin v9.9.9<'
@@ -384,6 +394,14 @@ jobs:
           cp "$RUNNER_TEMP/env.good" .env
           echo 'DOMAIN=other.example.com' >> .env
           if sudo ./nullbin start; then exit 1; fi
+          cp "$RUNNER_TEMP/env.good" .env
+          # Compose also reads NAME: value, and a later line wins: a quoted
+          # value spanning lines would add a site of its own to the proxy.
+          printf "DOMAIN: 'localhost {\n  respond injected\n}\nhttp://placeholder.invalid'\n" >> .env
+          if sudo ./nullbin start; then exit 1; fi
+          cp "$RUNNER_TEMP/env.good" .env
+          echo 'COMPOSE_PROJECT_NAME=other' >> .env
+          if sudo ./nullbin status; then exit 1; fi
           cp "$RUNNER_TEMP/env.good" .env
           # Refuses anything that is not a release version or a paste ID.
           if sudo ./nullbin update main; then exit 1; fi
@@ -421,10 +439,10 @@ jobs:
           # sees, as Caddy would. Another on an IPv4-only network shows what
           # Nullbin saw before (for comparison only).
           docker run -d --name peer --network nullbin_frontend -p 8099:8080 \
-            -v "$RUNNER_TEMP/peer.py:/peer.py:ro" python:3.13-alpine python /peer.py
+            -v "$RUNNER_TEMP/peer.py:/peer.py:ro" python:3.13-alpine@sha256:1e1f6334529d1fb26a2ef619d7cffb30a7c7d7cc1cc7338ebee283a58d1aeaca python /peer.py
           docker network create nbtest-v4only
           docker run -d --name peer4 --network nbtest-v4only -p 8098:8080 \
-            -v "$RUNNER_TEMP/peer.py:/peer.py:ro" python:3.13-alpine python /peer.py
+            -v "$RUNNER_TEMP/peer.py:/peer.py:ro" python:3.13-alpine@sha256:1e1f6334529d1fb26a2ef619d7cffb30a7c7d7cc1cc7338ebee283a58d1aeaca python /peer.py
           for i in $(seq 1 30); do
             curl -s -6 -o /dev/null 'http://[fd00:6e62::1]:8099/' && break
             sleep 1
@@ -442,6 +460,8 @@ jobs:
 
   deploy-api:
     name: Separate API deployment (HTTPS, CORS and isolation)
+    # Runs the helper script as root: not for pull requests from forks.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
