@@ -1,8 +1,9 @@
 Third-party notices for Nullbin
 ===============================
 
-Nullbin's own code is not open-source licensed yet (see LICENSE). The
-components below are distributed with it under their own licenses.
+Nullbin's own code is licensed under the GNU Affero General Public License,
+version 3 only (see LICENSE). The components below are distributed with it
+under their own licenses.
 
 Shipped in the browser bundles (internal/assets/dist, embedded in the binary)
 -----------------------------------------------------------------------------

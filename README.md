@@ -827,5 +827,13 @@ tests both Compose deployments over HTTPS. See
 
 ## License
 
-[LICENSE](LICENSE): currently all rights reserved. Bundled third-party
-components keep [their own licenses](THIRD_PARTY_NOTICES).
+Copyright (C) 2026 jacobzymet. Nullbin is free software, licensed under the
+[GNU Affero General Public License, version 3](LICENSE) only
+(AGPL-3.0-only): you may use, change and share it under its terms.
+
+If you run a **modified** version for others to use, the AGPL requires you
+to offer them its source code, for example with a link to your fork.
+Running an unmodified release needs nothing extra: its source is public
+here.
+
+Bundled third-party components keep [their own licenses](THIRD_PARTY_NOTICES).
