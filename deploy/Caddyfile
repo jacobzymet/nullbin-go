@@ -3,11 +3,14 @@
 # Access logging is off (Caddy's default without a `log` directive): URLs
 # contain paste IDs.
 
-# Direct (CLOUDFLARE=false) or behind Cloudflare's proxy (CLOUDFLARE=true):
+# Direct (CLOUDFLARE=false) or behind Cloudflare's proxy (true, or
+# self-signed to never use Let's Encrypt):
 # which proxies may name the visitor's address, and how certificates are
 # obtained. See caddy/cloudflare-*.caddy.
 import /etc/caddy/nullbin/cloudflare-{$CLOUDFLARE:false}.caddy
 
+# Global options. (This comment also keeps caddy fmt from joining the
+# block to the import line above, which would change its meaning.)
 {
 	# No admin API; restart the container to reload this file.
 	admin off

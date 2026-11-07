@@ -1,0 +1,18 @@
+# Cloudflare mode with a self-signed certificate only
+# (CLOUDFLARE=self-signed). Imported by Caddyfile and Caddyfile.api.
+#
+# Like cloudflare-true.caddy, but Let's Encrypt is never contacted: the
+# certificate always comes from Caddy's own local authority, and
+# Cloudflare's SSL mode must be "Full". Visitors only ever see Cloudflare's
+# certificate.
+
+import cf-ranges.caddy
+
+(edge-servers) {
+	import cf-servers
+}
+
+(edge-site) {
+	tls internal
+	import cf-lockdown
+}

@@ -529,7 +529,7 @@ jobs:
             grep . | sort > "$RUNNER_TEMP/published.txt"
           # Both lists in the configuration: who may name a visitor, and who may connect.
           for directive in 'trusted_proxies static' '@not-cloudflare not remote_ip'; do
-            grep -F "$directive" deploy/caddy/cloudflare-true.caddy | sed "s/.*$directive //" | tr ' ' '\n' | grep . | sort > "$RUNNER_TEMP/configured.txt"
+            grep -F "$directive" deploy/caddy/cf-ranges.caddy | sed "s/.*$directive //" | tr ' ' '\n' | grep . | sort > "$RUNNER_TEMP/configured.txt"
             diff "$RUNNER_TEMP/published.txt" "$RUNNER_TEMP/configured.txt"
           done
       - name: Set up and start in Cloudflare mode with the helper script
@@ -624,6 +624,25 @@ jobs:
           docker inspect nullbin-caddy-1 --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -qx 'CLOUDFLARE=false'
           sudo ./nullbin cloudflare on
           grep -qx 'CLOUDFLARE=true' .env
+      - name: Self-signed mode never contacts Let's Encrypt
+        working-directory: deploy
+        run: |
+          set -x
+          sudo ./nullbin cloudflare self-signed | tee "$RUNNER_TEMP/self.txt"
+          grep -qx 'CLOUDFLARE=self-signed' .env
+          docker inspect nullbin-caddy-1 --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -qx 'CLOUDFLARE=self-signed'
+          grep -q 'Cloudflare mode: on, self-signed' "$RUNNER_TEMP/self.txt"
+          for i in $(seq 1 30); do
+            sudo ./nullbin cloudflare > "$RUNNER_TEMP/self.txt"
+            grep -q "Certificate:     Caddy's own (self-signed)" "$RUNNER_TEMP/self.txt" && break
+            sleep 2
+          done
+          grep -q "Certificate:     Caddy's own (self-signed)" "$RUNNER_TEMP/self.txt"
+          grep -q 'Let.s Encrypt is never used' "$RUNNER_TEMP/self.txt"
+          # The recreated proxy never asked an ACME server for anything.
+          if docker logs nullbin-caddy-1 2>&1 | grep -qiE 'acme-v02|letsencrypt'; then exit 1; fi
+          # Still locked to Cloudflare.
+          test "$(curl -sk -o /dev/null -w '%{http_code}' --resolve nullbin.test:443:127.0.0.1 https://nullbin.test/)" = 403
       - name: Logs
         if: always()
         working-directory: deploy

@@ -4,8 +4,11 @@
 #   sudo ./nullbin setup paste.example.com    configure the one-server layout
 #   sudo ./nullbin setup-api api.example.com https://paste.example.com
 #                                             configure the separate-API layout
-#        (add --cloudflare to either when Cloudflare's proxy is in front)
+#        (add --cloudflare to either when Cloudflare's proxy is in front, or
+#        --cloudflare-self-signed to never use Let's Encrypt)
 #   sudo ./nullbin cloudflare on    Cloudflare's proxy is in front (off: it is not)
+#   sudo ./nullbin cloudflare self-signed
+#                                   the same, but never use Let's Encrypt
 #   sudo ./nullbin cloudflare       Cloudflare mode and certificate status
 #   sudo ./nullbin start            build and start the installed release
 #   sudo ./nullbin update           update to the latest release
@@ -139,8 +142,8 @@ main() {
       valid_origin "${value[FRONTEND_ORIGIN]:-}" || die "FRONTEND_ORIGIN in deploy/.env.api is not an address such as https://paste.example.com"
     fi
     # It picks a file of the proxy's configuration by name.
-    [[ ${value[CLOUDFLARE]:-false} =~ ^(true|false)$ ]] ||
-      die "CLOUDFLARE in deploy/$config must be true or false. Change it with: sudo ./nullbin cloudflare on (or off)"
+    [[ ${value[CLOUDFLARE]:-false} =~ ^(true|false|self-signed)$ ]] ||
+      die "CLOUDFLARE in deploy/$config must be true, false or self-signed. Change it with: sudo ./nullbin cloudflare on (or self-signed, or off)"
     for name in "${!value[@]}"; do settings[$name]=${value[$name]}; done
   }
 
@@ -180,7 +183,12 @@ main() {
       openssl x509 -noout -issuer 2>/dev/null || true)
     case $issuer in
       "") echo "none yet (is Nullbin running? It can take a minute after starting)" ;;
-      *"Caddy Local Authority"*) echo "Caddy's own (Let's Encrypt has not issued one yet)" ;;
+      *"Caddy Local Authority"*)
+        if [[ ${settings[CLOUDFLARE]:-false} == self-signed ]]; then
+          echo "Caddy's own (self-signed)"
+        else
+          echo "Caddy's own (Let's Encrypt has not issued one yet)"
+        fi ;;
       *"Let's Encrypt"*) echo "Let's Encrypt" ;;
       *) echo "${issuer#issuer=}" ;;
     esac
@@ -188,21 +196,28 @@ main() {
 
   # What to set in Cloudflare's dashboard, given the certificate in use.
   cloudflare_status() {
-    local issuer
-    if [[ ${settings[CLOUDFLARE]:-false} != true ]]; then
+    local issuer mode=${settings[CLOUDFLARE]:-false}
+    if [[ $mode == false ]]; then
       echo "Cloudflare mode: off. Visitors connect to this server directly."
       echo "If Cloudflare's proxy (orange cloud) is in front, run: sudo ./nullbin cloudflare on"
       return
     fi
     issuer=$(certificate_issuer)
-    echo "Cloudflare mode: on. Only connections from Cloudflare's addresses are answered."
+    if [[ $mode == self-signed ]]; then
+      echo "Cloudflare mode: on, self-signed. Only connections from Cloudflare's addresses are answered."
+    else
+      echo "Cloudflare mode: on. Only connections from Cloudflare's addresses are answered."
+    fi
     echo "Certificate:     $issuer"
-    case $issuer in
-      "Let's Encrypt") echo "In Cloudflare, set SSL/TLS encryption to: Full (strict)" ;;
-      "Caddy's own"*)
+    case $mode:$issuer in
+      "true:Let's Encrypt") echo "In Cloudflare, set SSL/TLS encryption to: Full (strict)" ;;
+      "true:Caddy's own"*)
         echo "In Cloudflare, set SSL/TLS encryption to: Full (not Full (strict), until Let's Encrypt issues one)"
         echo "Caddy tries Let's Encrypt again about every 40 minutes; it needs this server's port 80 open"
         echo "to Cloudflare. Check again later with: sudo ./nullbin cloudflare" ;;
+      "self-signed:Caddy's own"*)
+        echo "In Cloudflare, set SSL/TLS encryption to: Full (not Full (strict): Let's Encrypt is never used)"
+        echo "For Full (strict) with a Let's Encrypt certificate instead, run: sudo ./nullbin cloudflare on" ;;
     esac
   }
 
@@ -250,6 +265,15 @@ main() {
     echo "Wrote deploy/$target. To change settings later, edit it and run: sudo ./nullbin start"
   }
 
+  # Sets the caller's cloudflare array from setup's optional last argument.
+  cloudflare_option() {
+    case $1 in
+      --cloudflare) cloudflare=(CLOUDFLARE=true) ;;
+      --cloudflare-self-signed) cloudflare=(CLOUDFLARE=self-signed) ;;
+      *) die "unknown option $1 (use --cloudflare or --cloudflare-self-signed)" ;;
+    esac
+  }
+
   installed() { g describe --tags --always 2>/dev/null || echo unknown; }
 
   # The version the running API was built from, from its image label.
@@ -288,7 +312,7 @@ $changes" >&2
     echo "Building and starting Nullbin $version. The first build takes a few minutes."
     VERSION=$version "${compose[@]}" up -d --build --remove-orphans --wait --wait-timeout 600
     echo "Nullbin $version is running."
-    if [[ ${settings[CLOUDFLARE]:-false} == true && $cmd != cloudflare ]]; then
+    if [[ ${settings[CLOUDFLARE]:-false} != false && $cmd != cloudflare ]]; then
       echo "Cloudflare mode is on. For its certificate and Cloudflare's SSL setting, run: sudo ./nullbin cloudflare"
     fi
   }
@@ -328,12 +352,12 @@ $changes" >&2
         die "give your domain name only, such as: sudo ./nullbin setup paste.example.com (no https:// and no slash)"
       case $# in
         1) ;;
-        2) [[ $2 == --cloudflare ]] || die "unknown option $2 (did you mean --cloudflare?)"; cloudflare=(CLOUDFLARE=true) ;;
-        *) die "usage: sudo ./nullbin setup paste.example.com [--cloudflare]" ;;
+        2) cloudflare_option "$2" ;;
+        *) die "usage: sudo ./nullbin setup paste.example.com [--cloudflare | --cloudflare-self-signed]" ;;
       esac
       write_config env.example .env "DOMAIN=$domain" "${cloudflare[@]}"
       if [[ ${#cloudflare[@]} -gt 0 ]]; then
-        echo "Cloudflare mode is on. Next: in Cloudflare, add a proxied (orange cloud) DNS record for $domain"
+        echo "Cloudflare mode is on$([[ ${cloudflare[0]} == *self-signed ]] && echo ", self-signed"). Next: in Cloudflare, add a proxied (orange cloud) DNS record for $domain"
         echo "pointing at this server, then run: sudo ./nullbin start"
       else
         echo "Next: point $domain at this server, then run: sudo ./nullbin start"
@@ -349,12 +373,12 @@ $changes" >&2
         die "the website address must be https:// and a domain name, with no path or trailing slash and no :443, such as https://paste.example.com"
       case $# in
         2) ;;
-        3) [[ $3 == --cloudflare ]] || die "unknown option $3 (did you mean --cloudflare?)"; cloudflare=(CLOUDFLARE=true) ;;
-        *) die "usage: sudo ./nullbin setup-api api.example.com https://paste.example.com [--cloudflare]" ;;
+        3) cloudflare_option "$3" ;;
+        *) die "usage: sudo ./nullbin setup-api api.example.com https://paste.example.com [--cloudflare | --cloudflare-self-signed]" ;;
       esac
       write_config env.api.example .env.api "API_DOMAIN=$api" "FRONTEND_ORIGIN=$origin" "${cloudflare[@]}"
       if [[ ${#cloudflare[@]} -gt 0 ]]; then
-        echo "Cloudflare mode is on. Next: in Cloudflare, add a proxied (orange cloud) DNS record for $api"
+        echo "Cloudflare mode is on$([[ ${cloudflare[0]} == *self-signed ]] && echo ", self-signed"). Next: in Cloudflare, add a proxied (orange cloud) DNS record for $api"
         echo "pointing at this server, then run: sudo ./nullbin start"
       else
         echo "Next: point $api at this server, then run: sudo ./nullbin start"
@@ -362,31 +386,26 @@ $changes" >&2
       ;;
     cloudflare)
       layout
-      local want=${1:-status} current=${settings[CLOUDFLARE]:-false}
-      [[ $# -le 1 ]] || die "usage: sudo ./nullbin cloudflare [on | off]"
+      local want=${1:-status} current=${settings[CLOUDFLARE]:-false} target
+      [[ $# -le 1 ]] || die "usage: sudo ./nullbin cloudflare [on | self-signed | off]"
       case $want in
-        status)
-          cloudflare_status
-          exit 0
-          ;;
-        on)
-          if [[ $current == true ]]; then
-            echo "Cloudflare mode is already on."
-            cloudflare_status
-            exit 0
-          fi
-          set_setting CLOUDFLARE=true
-          ;;
-        off)
-          if [[ $current != true ]]; then
-            echo "Cloudflare mode is already off."
-            exit 0
-          fi
-          # Off is the default, so the setting is removed rather than set to false.
-          set_setting CLOUDFLARE=
-          ;;
-        *) die "usage: sudo ./nullbin cloudflare [on | off]" ;;
+        status) cloudflare_status; exit 0 ;;
+        on) target=true ;;
+        self-signed) target=self-signed ;;
+        off) target=false ;;
+        *) die "usage: sudo ./nullbin cloudflare [on | self-signed | off]" ;;
       esac
+      if [[ $current == "$target" ]]; then
+        echo "Cloudflare mode is already $want."
+        [[ $target == false ]] || cloudflare_status
+        exit 0
+      fi
+      if [[ $target == false ]]; then
+        # Off is the default, so the setting is removed rather than set to false.
+        set_setting CLOUDFLARE=
+      else
+        set_setting "CLOUDFLARE=$target"
+      fi
       settings=()
       check_config
       start
@@ -461,6 +480,8 @@ Set them aside with: git -C $repo stash --include-untracked (and move ignored on
       echo "Checked-out code:  $(installed)"
       if [[ ${settings[CLOUDFLARE]:-false} == true ]]; then
         echo "Cloudflare mode:   on (details: sudo ./nullbin cloudflare)"
+      elif [[ ${settings[CLOUDFLARE]:-false} == self-signed ]]; then
+        echo "Cloudflare mode:   on, self-signed (details: sudo ./nullbin cloudflare)"
       else
         echo "Cloudflare mode:   off"
       fi

@@ -160,7 +160,7 @@ sudo ./nullbin setup paste.example.com
 ```
 
 If Cloudflare's proxy (orange cloud) will be in front of the server, add
-`--cloudflare` to that command and read
+`--cloudflare` (or `--cloudflare-self-signed`) to that command and read
 [Behind Cloudflare](#behind-cloudflare) first.
 
 **3. Start Nullbin.** The first start takes a few minutes:
@@ -284,7 +284,7 @@ Option A and Option B.
 | Stop | `sudo ./nullbin stop` |
 | Start | `sudo ./nullbin start` |
 | Remove a reported paste | `sudo ./nullbin delete <paste id>` |
-| Turn Cloudflare mode on or off | `sudo ./nullbin cloudflare on` (or `off`) |
+| Turn Cloudflare mode on or off | `sudo ./nullbin cloudflare on` (or `self-signed`, or `off`) |
 | Show Cloudflare mode, the certificate and the SSL setting to use | `sudo ./nullbin cloudflare` |
 | Free disk space used by old builds | `sudo ./nullbin cleanup` |
 | List every command | `./nullbin help` |
@@ -354,7 +354,7 @@ change with `sudo ./nullbin start`.
 | `MAX_PASTES` | `100000` | Most pastes kept at once. Each uses about four inodes; check with `df -i` before raising it. |
 | `DOMAIN` (A) or `API_DOMAIN` (B) | set by `setup` | The server's domain name. |
 | `FRONTEND_ORIGIN` (B only) | set by `setup-api` | The website's exact address. |
-| `CLOUDFLARE` | not set (off) | `true` when Cloudflare's proxy is in front. Change it with `sudo ./nullbin cloudflare on` or `off`, not by hand. See [Behind Cloudflare](#behind-cloudflare). |
+| `CLOUDFLARE` | not set (off) | `true` when Cloudflare's proxy is in front, `self-signed` to also never use Let's Encrypt. Change it with `sudo ./nullbin cloudflare on`, `self-signed` or `off`, not by hand. See [Behind Cloudflare](#behind-cloudflare). |
 
 Write each setting on its own line as `NAME=value`, with no quotes or
 spaces. `./nullbin` refuses to start with anything else (other forms that
@@ -379,6 +379,12 @@ sudo ./nullbin cloudflare on
 
 (Or add `--cloudflare` to `setup` or `setup-api` when you first set up.)
 `sudo ./nullbin cloudflare off` turns it off again.
+
+**Don't want Let's Encrypt at all?** Use
+`sudo ./nullbin cloudflare self-signed` (or `--cloudflare-self-signed`)
+instead. The server then always uses its own certificate and never contacts
+Let's Encrypt, so it needs only port 443 open to Cloudflare, and Cloudflare
+must stay on **Full**. Everything else is the same as `on`.
 
 **2. In Cloudflare's dashboard:**
 
