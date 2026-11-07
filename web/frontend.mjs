@@ -1,14 +1,24 @@
 // Build-time settings for static hosting. Nothing here is supplied by the
 // storage server. Keep the same baseline headers as internal/server.
 export function parseAPIOrigin(value = '') {
+  return parseOrigin(value, 'NULLBIN_API_ORIGIN', 'https://api.example.com');
+}
+
+// The website's own address, for link previews (Open Graph), which need an
+// absolute image URL. Optional; without it the page has no preview image.
+export function parseSiteOrigin(value = '') {
+  return parseOrigin(value, 'NULLBIN_SITE_ORIGIN', 'https://paste.example.com');
+}
+
+function parseOrigin(value, name, example) {
   if (value === '') return '';
   let url;
-  try { url = new URL(value); } catch { throw new Error('NULLBIN_API_ORIGIN must be an HTTPS origin, such as https://api.example.com'); }
+  try { url = new URL(value); } catch { throw new Error(`${name} must be an HTTPS origin, such as ${example}`); }
   const local = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
   if ((url.protocol !== 'https:' && !(url.protocol === 'http:' && local)) ||
       url.username || url.password || url.pathname !== '/' || url.search || url.hash ||
       ![url.origin, `${url.origin}/`].includes(value)) {
-    throw new Error('NULLBIN_API_ORIGIN must be a canonical HTTPS origin without a path, credentials, query or fragment (HTTP is local-test only)');
+    throw new Error(`${name} must be a canonical HTTPS origin without a path, credentials, query or fragment (HTTP is local-test only)`);
   }
   return url.origin;
 }

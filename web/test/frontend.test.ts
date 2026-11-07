@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseAPIOrigin, contentSecurityPolicy, frontendHeaders } from '../frontend.mjs';
+import { parseAPIOrigin, parseSiteOrigin, contentSecurityPolicy, frontendHeaders } from '../frontend.mjs';
 
 test('static frontend API origin is explicit and rejects unsafe or ambiguous URLs', () => {
   assert.equal(parseAPIOrigin(''), '');
@@ -9,6 +9,14 @@ test('static frontend API origin is explicit and rejects unsafe or ambiguous URL
   assert.equal(parseAPIOrigin('http://127.0.0.1:8000'), 'http://127.0.0.1:8000');
   for (const value of ['*', '//api.example.com', 'http://api.example.com', 'https://u:p@api.example.com', 'https://api.example.com/api', 'https://api.example.com?x', 'https://api.example.com#x', 'https://api.example.com\n', 'https://API.example.com', 'https://api.example.com:443']) {
     assert.throws(() => parseAPIOrigin(value), Error, value);
+  }
+});
+
+test('the site address for link previews is checked as strictly as the API address', () => {
+  assert.equal(parseSiteOrigin(''), '');
+  assert.equal(parseSiteOrigin('https://paste.example.com/'), 'https://paste.example.com');
+  for (const value of ['http://paste.example.com', 'https://paste.example.com/x', 'https://paste.example.com"><script>', 'https://PASTE.example.com', 'javascript:alert(1)']) {
+    assert.throws(() => parseSiteOrigin(value), Error, value);
   }
 });
 

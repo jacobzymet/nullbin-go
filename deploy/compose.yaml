@@ -56,6 +56,8 @@ services:
       target: frontend
       args:
         VERSION: ${VERSION:-self-built}
+        # Link previews in chat apps need the site's absolute address.
+        SITE_ORIGIN: https://${DOMAIN:?Set DOMAIN in deploy/.env (copy env.example to .env)}
     restart: unless-stopped
     depends_on:
       nullbin:

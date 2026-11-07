@@ -12,7 +12,7 @@ import { createHash } from 'node:crypto';
 import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-import { parseAPIOrigin, frontendHeaders, contentSecurityPolicy } from './frontend.mjs';
+import { parseAPIOrigin, parseSiteOrigin, frontendHeaders, contentSecurityPolicy } from './frontend.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const outDir = path.join(root, 'internal', 'assets', 'dist');
@@ -20,6 +20,7 @@ const staticDir = path.join(root, 'web', 'dist');
 const generatedDir = path.join(root, 'web', 'generated');
 const frontendOnly = process.argv.includes('--frontend-only');
 const apiOrigin = parseAPIOrigin(process.env.NULLBIN_API_ORIGIN ?? '');
+const siteOrigin = parseSiteOrigin(process.env.NULLBIN_SITE_ORIGIN ?? '');
 
 // The version shown in the footer. Docker and release builds pass it in
 // NULLBIN_VERSION (from the VERSION build argument). Otherwise a build from
@@ -162,6 +163,17 @@ await mkdir(path.join(staticDir, 'assets'), { recursive: true });
 await mkdir(generatedDir, { recursive: true });
 const jsName = `app.${hex(jsBytes)}.js`;
 const cssName = `app.${hex(cssBytes)}.css`;
+// Link previews need an absolute image URL, so the image is published only
+// when the site's address is known. It is a public, content-hashed asset.
+const previewBytes = await readFile(path.join(root, 'web', 'images', 'preview.png'));
+const previewName = `preview.${hex(previewBytes)}.png`;
+const previewTags = siteOrigin === '' ? '' : `
+<meta property="og:image" content="${siteOrigin}/assets/${previewName}">
+<meta property="og:image:width" content="400">
+<meta property="og:image:height" content="400">
+<meta property="og:image:alt" content="Nullbin">`;
+const cardTag = '<meta name="twitter:card" content="summary">';
+if (html.split(cardTag).length !== 2) fail('index.html must contain exactly one twitter:card meta tag');
 // The same policy as a <meta> tag, in case a static host ignores _headers.
 // Browsers ignore frame-ancestors there; X-Frame-Options still covers framing
 // on hosts that do send the headers.
@@ -172,13 +184,15 @@ if (html.split(charset).length !== 2) fail('index.html must contain exactly one 
 const staticHTML = html
   .replace(charset, `${charset}
 <meta http-equiv="Content-Security-Policy" content="${metaPolicy}">`)
-  .replace('/assets/app.js', `/assets/${jsName}`).replace('/assets/app.css', `/assets/${cssName}`);
+  .replace('/assets/app.js', `/assets/${jsName}`).replace('/assets/app.css', `/assets/${cssName}`)
+  .replace(cardTag, cardTag + previewTags);
 if (staticHTML.split('<meta http-equiv="Content-Security-Policy"').length !== 2 || staticHTML.indexOf('http-equiv="Content-Security-Policy"') > staticHTML.indexOf('<link')) {
   fail('the static index.html must carry its Content-Security-Policy once, before any stylesheet or script');
 }
 await writeFile(path.join(staticDir, 'index.html'), staticHTML);
 await writeFile(path.join(staticDir, 'assets', jsName), jsBytes);
 await writeFile(path.join(staticDir, 'assets', cssName), cssBytes);
+if (siteOrigin !== '') await writeFile(path.join(staticDir, 'assets', previewName), previewBytes);
 const headers = frontendHeaders(apiOrigin);
 let headersFile = '/*\n' + Object.entries(headers).map(([k, v]) => `  ${k}: ${v}\n`).join('');
 for (const page of ['/', '/index.html', '/p/*', '/d/*', '/version.json']) headersFile += `${page}\n  Cache-Control: no-store\n`;
@@ -188,6 +202,7 @@ await writeFile(path.join(staticDir, '_redirects'), '/p/* /index.html 200\n/d/* 
 await writeFile(path.join(staticDir, 'version.json'), JSON.stringify({
   version,
   api_origin: apiOrigin || 'same-origin',
+  site_origin: siteOrigin || 'not set',
   html_sha256: hex(new TextEncoder().encode(staticHTML)),
   js: `/assets/${jsName}`, js_sha256: hex(jsBytes),
   css: `/assets/${cssName}`, css_sha256: hex(cssBytes),

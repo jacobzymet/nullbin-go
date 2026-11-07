@@ -220,13 +220,15 @@ git clone --branch v1.2.3 https://github.com/jacobzymet/nullbin-go.git nullbin
 cd nullbin
 ```
 
-Then build it with your API's address, using **one** of these:
+Then build it with your API's address and the website's own address (the
+second one only gives link previews in chat apps their image), using
+**one** of these:
 
 - **With Docker** (works in PowerShell, Linux and macOS). The output folder
   is `out/frontend`:
 
   ```sh
-  docker build --target frontend-files --build-arg API_ORIGIN=https://api.example.com --build-arg VERSION=$(git describe --tags) --output type=local,dest=out/frontend .
+  docker build --target frontend-files --build-arg API_ORIGIN=https://api.example.com --build-arg SITE_ORIGIN=https://paste.example.com --build-arg VERSION=$(git describe --tags) --output type=local,dest=out/frontend .
   ```
 
 - **With Node.js 26 or later.** The output folder is `web/dist`:
@@ -238,13 +240,14 @@ Then build it with your API's address, using **one** of these:
   Then on Linux or macOS:
 
   ```bash
-  NULLBIN_API_ORIGIN=https://api.example.com npm run build:frontend
+  NULLBIN_API_ORIGIN=https://api.example.com NULLBIN_SITE_ORIGIN=https://paste.example.com npm run build:frontend
   ```
 
   Or in Windows PowerShell:
 
   ```powershell
   $env:NULLBIN_API_ORIGIN = "https://api.example.com"
+  $env:NULLBIN_SITE_ORIGIN = "https://paste.example.com"
   npm run build:frontend
   ```
 
@@ -789,9 +792,10 @@ Compare with the release's `SHA256SUMS`. `nullbin` matches
 `nullbin-linux-amd64` or `nullbin-linux-arm64`, depending on your machine.
 The three website files are those of the local all-in-one server.
 
-**A separately hosted website.** Its `/version.json` lists its version, API
-address, asset paths and file hashes. Build the same version with the same
-API address, then compare the downloaded page, script and style with your
+**A website.** Its `/version.json` lists its version, API address, site
+address (`site_origin`, used only for the link-preview image), asset paths
+and file hashes. Build the same version with the same two addresses, then
+compare the downloaded page, script and style with your
 build. The page's Subresource Integrity hashes tie the scripts to the page.
 
 A check proves only what was served to you at that moment; a compromised
@@ -827,7 +831,7 @@ host that supports `_headers` and `_redirects`:
 | Node version | 26 or later |
 | Build command | `npm ci --ignore-scripts && npm run build:frontend` |
 | Output directory | `web/dist` |
-| Environment variable | `NULLBIN_API_ORIGIN=https://api.example.com` |
+| Environment variables | `NULLBIN_API_ORIGIN=https://api.example.com` and, for link-preview images, `NULLBIN_SITE_ORIGIN=https://paste.example.com` |
 
 Automatic builds follow a branch, so do not point them at `main`. Use a
 branch in your own fork that you only move to release tags. Turn off any

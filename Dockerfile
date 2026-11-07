@@ -27,8 +27,10 @@ RUN npm ci --ignore-scripts --no-audit --no-fund
 COPY tsconfig.json ./
 COPY web ./web
 ARG API_ORIGIN=
+# The website's own address, for the link-preview image (optional).
+ARG SITE_ORIGIN=
 ARG VERSION
-RUN NULLBIN_VERSION="$VERSION" NULLBIN_API_ORIGIN="$API_ORIGIN" npm run build
+RUN NULLBIN_VERSION="$VERSION" NULLBIN_API_ORIGIN="$API_ORIGIN" NULLBIN_SITE_ORIGIN="$SITE_ORIGIN" npm run build
 
 # --- server binary ----------------------------------------------------------
 FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine@sha256:d200d2dd76b03a99b52651fd1325aff7dcd35422c35c01bac56571b0507f3deb AS go-base

@@ -119,8 +119,9 @@ jobs:
           \`\`\`
 
           \`app.js\`, \`app.css\` and \`index.html\` are the frontend of the
-          optional combined server. A separately hosted frontend is built
-          with its own API address, so its hashes differ; it reports them in
+          optional combined server. A website served on its own is built
+          with its own API and site addresses, so its hashes differ; it
+          reports them in
           \`/version.json\`.
 
           \`\`\`
