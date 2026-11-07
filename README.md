@@ -907,7 +907,7 @@ tests both Compose deployments over HTTPS. See
 
 ## License
 
-Copyright (C) 2026 jacobzymet. Nullbin is free software, licensed under the
+Copyright (C) 2026 Jacob Zymet. Nullbin is free software, licensed under the
 [GNU Affero General Public License, version 3](LICENSE) only
 (AGPL-3.0-only): you may use, change and share it under its terms.
 
