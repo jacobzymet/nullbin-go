@@ -82,7 +82,7 @@
         <textarea id="text" class="nb-editor" rows="20" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off" placeholder="Paste text here…" aria-invalid="false"></textarea>
         <div class="nb-composer-bar">
           <ul id="file-list" class="nb-file-list" aria-label="Attached files" hidden></ul>
-          <span class="nb-meta nb-drop-label">Drag and drop files to attach them. Several files are sent as one zip.</span>
+          <span class="nb-meta nb-drop-label">Drop files or paste an image to attach. Several files are sent as one zip.</span>
           <span id="char-count" class="nb-meta ms-auto">0 characters</span>
         </div>
         <div class="nb-drop-hint" aria-hidden="true"><svg class="nb-i" aria-hidden="true"><use href="#i-clip"/></svg>Drop to attach</div>
@@ -256,10 +256,13 @@
           <p id="view-filename" class="nb-file-name"></p>
           <p class="nb-meta mb-0"><span id="view-filesize"></span> · <span id="view-mime"></span></p>
         </div>
+        <button id="image-show" type="button" class="btn nb-btn-secondary" aria-controls="image-preview" aria-expanded="false" hidden><svg class="nb-i" aria-hidden="true"><use href="#i-eye"/></svg><span>Show image</span></button>
         <button id="save-file" type="button" class="btn nb-btn-primary"><svg class="nb-i" aria-hidden="true"><use href="#i-download"/></svg><span>Save file</span></button>
         <p id="file-saved" class="nb-file-saved nb-tone-ok" tabindex="-1" hidden><svg class="nb-i" aria-hidden="true"><use href="#i-check"/></svg>Verified and saved</p>
         <p id="file-error" class="nb-note nb-tone-danger nb-file-error" role="alert" tabindex="-1" hidden></p>
-        <p class="nb-file-note">Nullbin never opens files. Only save files you expect.</p>
+        <figure id="image-preview" class="nb-image-preview" hidden></figure>
+        <p id="image-note" class="nb-note nb-file-error" role="status" hidden></p>
+        <p class="nb-file-note">Nullbin opens nothing by itself and shows images only when you ask. Only save files you expect.</p>
       </div>
 
       <!-- Discussion -->

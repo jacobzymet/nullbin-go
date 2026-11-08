@@ -36,20 +36,27 @@ export function crc32(crc: number, bytes: Uint8Array): number {
   return (c ^ 0xffffffff) >>> 0;
 }
 
-// Names Windows reserves for devices, with or without an extension.
-const WINDOWS_DEVICE = /^(con|prn|aux|nul|com[0-9¹²³]|lpt[0-9¹²³])(\..*)?$/i;
+// Names Windows reserves for devices, alone or followed by an extension or
+// spaces.
+const WINDOWS_DEVICE = /^(con|prn|aux|nul|com[0-9¹²³]|lpt[0-9¹²³]|conin\$|conout\$|clock\$)([\s.].*)?$/i;
 
 /**
- * A name for inside the archive: no folders, drive letters, control or
- * direction characters, leading dots, trailing dots or spaces (which
- * Windows drops) or Windows device names, so extracting it can never write
+ * A file name with no folders, drive letters, control or direction
+ * characters, leading dots, trailing dots or spaces (which Windows drops)
+ * or Windows device names, so saving or extracting it can never write
  * outside the chosen folder, hide what it is, or land on another file.
+ * Used for single downloads and for names inside archives.
  */
-export function zipEntryName(name: string): string {
+export function cleanFileName(name: string, fallback: string): string {
   let cleaned = name.normalize('NFC').replace(/[\p{Cf}\p{Cc}/\\:*?"<>|]/gu, '_').replace(/^[.\s]+/, '');
   cleaned = [...cleaned].slice(0, 200).join('').replace(/[.\s]+$/, '');
   if (WINDOWS_DEVICE.test(cleaned)) cleaned = `_${cleaned}`;
-  return cleaned || 'file';
+  return cleaned || fallback;
+}
+
+/** A name for inside the archive (see cleanFileName). */
+export function zipEntryName(name: string): string {
+  return cleanFileName(name, 'file');
 }
 
 /**

@@ -26,6 +26,9 @@ import { downloadBlob as download } from './files.ts';
 import { initReaderActions, type CloneAttachment } from './reader-actions.ts';
 import { parseKeyFragment } from './link.ts';
 import { loadSodium } from './sodium.ts';
+import { cleanFileName } from './zip.ts';
+import { MAX_PREVIEW_BYTES, mayPreview } from './image.ts';
+import { clearImage, showImage } from './preview.ts';
 
 // The File System Access API is not in TypeScript's DOM types yet.
 interface SaveFilePickerWindow {
@@ -42,10 +45,14 @@ export { hasHiddenChars };
 export function textPreview(text: string): { text: string; lines: number; truncated: boolean } {
   let lines = 1;
   let end = Math.min(text.length, MAX_PREVIEW_CHARS);
+  // A line ends at \n, \r\n or a lone \r, since the browser shows a lone \r
+  // as a line break too.
   for (let i = 0; i < text.length; i++) {
-    if (text.charCodeAt(i) !== 10 || i === text.length - 1) continue;
+    const c = text.charCodeAt(i);
+    if (c === 13 && text.charCodeAt(i + 1) === 10) continue; // the \n ends this line
+    if ((c !== 10 && c !== 13) || i === text.length - 1) continue;
     lines++;
-    if (lines === MAX_PREVIEW_LINES + 1) end = Math.min(end, i > 0 && text.charCodeAt(i - 1) === 13 ? i - 1 : i);
+    if (lines === MAX_PREVIEW_LINES + 1) end = Math.min(end, c === 10 && i > 0 && text.charCodeAt(i - 1) === 13 ? i - 1 : i);
   }
   // Avoid splitting a UTF-16 surrogate pair at the character limit.
   if (end < text.length && end > 0 && /[\uD800-\uDBFF]/.test(text[end - 1]!)) end--;
@@ -163,7 +170,7 @@ async function open(id: string, key: Uint8Array, burn: boolean, shareURL: string
 function renderText(text: string): void {
   const box = el('view-text');
   const preview = textPreview(text);
-  const lines = preview.text.split(/\r?\n/);
+  const lines = preview.text.split(/\r\n?|\n/);
   if (lines.length > 1 && lines[lines.length - 1] === '') lines.pop(); // a trailing newline is not a line
   const rows = document.createDocumentFragment();
   lines.forEach((line, i) => {
@@ -204,14 +211,17 @@ function renderFile(file: AsyncGenerator<Uint8Array>, filename: string | null, s
   const clone = el<HTMLButtonElement>('view-clone');
   const attachment = new CloneableAttachment(file, safeFilename(filename), size, mime ?? '');
   let savedFile: File | null = null;
+  const imageShow = el<HTMLButtonElement>('image-show');
   // Called directly from the click so the browser allows the save dialog.
   save.addEventListener('click', () => {
     if (save.disabled) return;
     const done = busy(save, 'Saving…');
     clone.disabled = true;
+    imageShow.disabled = true; // one reader of the attachment at a time
     saveFile(attachment.stream(), safeFilename(filename), size, (localFile) => { savedFile = localFile; }).then(
       (saved) => {
         done();
+        imageShow.disabled = false;
         clone.disabled = !attachment.canClone && savedFile === null;
         if (!clone.disabled) clone.title = 'Copy the text and verified attachment to a new draft.';
         if (!saved) {
@@ -225,6 +235,7 @@ function renderFile(file: AsyncGenerator<Uint8Array>, filename: string | null, s
       (e: unknown) => {
         done();
         clone.disabled = !attachment.canClone && savedFile === null;
+        show(imageShow, false); // the attachment could not be read
         void cancel();
         // Keep the page (and any text) visible; only the file failed.
         show(save, false);
@@ -238,16 +249,70 @@ function renderFile(file: AsyncGenerator<Uint8Array>, filename: string | null, s
       },
     );
   });
+  initImagePreview(imageShow, mayPreview(mime, size), safeFilename(filename), async () => {
+    if (savedFile) return savedFile;
+    const disabled = clone.disabled;
+    save.disabled = true;
+    clone.disabled = true;
+    try { return await attachment.clone(); }
+    catch (e) { void cancel(); throw e; }
+    finally { save.disabled = false; clone.disabled = disabled; }
+  });
   reveal(el('view-file-card'));
   return {
     available: attachment.canClone,
     load: async () => {
       save.disabled = true;
+      imageShow.disabled = true;
       try { return savedFile ?? await attachment.clone(); }
       catch (e) { void cancel(); throw e; }
-      finally { save.disabled = false; }
+      finally { save.disabled = false; imageShow.disabled = false; }
     },
   };
+}
+
+/**
+ * The Show image button. Nothing is decoded until the reader presses it, and
+ * then only the complete, verified attachment.
+ */
+function initImagePreview(button: HTMLButtonElement, offered: boolean, name: string, load: () => Promise<File>): void {
+  const note = el('image-note');
+  const label = button.querySelector('span')!;
+  const use = button.querySelector('use')!;
+  const expanded = (on: boolean) => {
+    button.setAttribute('aria-expanded', String(on));
+    label.textContent = on ? 'Hide image' : 'Show image';
+    use.setAttribute('href', on ? '#i-eye-off' : '#i-eye');
+  };
+  const explain = (message: string) => {
+    note.textContent = message;
+    reveal(note);
+  };
+  show(button, offered);
+  button.addEventListener('click', async () => {
+    if (button.disabled) return;
+    if (button.getAttribute('aria-expanded') === 'true') {
+      clearImage();
+      expanded(false);
+      return;
+    }
+    show(note, false);
+    const done = busy(button, 'Loading…');
+    let shown = false;
+    try {
+      const file = await load();
+      if (file.size > MAX_PREVIEW_BYTES) throw new Error('too large');
+      shown = await showImage(new Uint8Array(await file.arrayBuffer()), name);
+      if (!shown) explain('This file can’t be shown as an image. You can still save it.');
+    } catch (e) {
+      show(button, false);
+      explain(e instanceof PasteError ? `${e.message} Nothing was shown.` : 'The image could not be loaded. You can still try to save it.');
+    } finally {
+      done();
+    }
+    expanded(shown);
+    if (!shown) show(button, false);
+  });
 }
 
 /** Shows the password gate and resolves with what the reader enters, or null if they cancel. */
@@ -347,15 +412,12 @@ async function saveWithBlob(file: AsyncGenerator<Uint8Array>, name: string, size
 }
 
 /**
- * A download name without path separators, control characters or bidi
- * controls (which can make "invoice\u202Efdp.exe" display as "invoiceexe.pdf").
+ * A download name without path separators, control characters, bidi
+ * controls (which can make "invoice\u202Efdp.exe" display as "invoiceexe.pdf")
+ * or Windows device names. The same rule as names inside a zip.
  */
 export function safeFilename(name: string | null): string {
-  const cleaned = (name ?? '')
-    .replace(/[\p{Cf}\p{Cc}/\\:*?"<>|]/gu, '_')
-    .replace(/^[.\s]+/, '')
-    .trim();
-  return cleaned.slice(0, 200) || 'download';
+  return cleanFileName(name ?? '', 'download');
 }
 
 function showFailure(e: unknown): void {

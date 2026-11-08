@@ -1,11 +1,25 @@
 import { initCreate } from './create.ts';
 import { busy, el, toast } from './dom.ts';
 import { downloadBlob, openRawText } from './files.ts';
+import { clearImage } from './preview.ts';
 import { initShareActions } from './share.ts';
 
 export interface CloneAttachment {
   available: boolean;
   load: () => Promise<File>;
+}
+
+/**
+ * Removes the opened paste from the page once the reader moves on to a
+ * draft: its text, file details, comments and secret link. Hiding the view
+ * alone would leave them in the page.
+ */
+function clearView(): void {
+  for (const id of ['view-text', 'view-chips', 'comment-list']) el(id).replaceChildren();
+  for (const id of ['view-text-meta', 'view-filename', 'view-filesize', 'view-mime', 'reply-name']) el(id).textContent = '';
+  for (const id of ['comment-text', 'comment-name']) el<HTMLInputElement | HTMLTextAreaElement>(id).value = '';
+  el('view-email').removeAttribute('href');
+  clearImage();
 }
 
 export function initReaderActions(text: string, url: string, shareable: boolean, attachment: CloneAttachment | null): void {
@@ -22,6 +36,7 @@ export function initReaderActions(text: string, url: string, shareable: boolean,
     try {
       const file = attachment ? await attachment.load() : null;
       history.replaceState(null, '', '/');
+      clearView();
       initCreate({ text, file });
       toast('Copied to a new draft');
     } catch (e) {

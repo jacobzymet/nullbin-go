@@ -502,11 +502,16 @@ jobs:
                   return urllib.request.urlopen(req, context=ctx)
               except urllib.error.HTTPError as err:
                   return err
-          assert call('/').status == 404
           assert call('/assets/app.js').status == 404
+          security = ('Content-Security-Policy', 'Cross-Origin-Resource-Policy', 'Cross-Origin-Opener-Policy',
+                      'X-Content-Type-Options', 'X-Frame-Options', 'Referrer-Policy', 'Strict-Transport-Security')
+          # Responses Caddy makes itself (here: not found) carry them too.
+          for resp, status in ((call('/'), 404), (call('/api/v1/version'), 200)):
+              assert resp.status == status
+              for name in security:
+                  assert len(resp.headers.get_all(name) or []) == 1, name  # a repeated header is invalid
+              assert 'sandbox' in resp.headers['Content-Security-Policy']
           resp = call('/api/v1/version')
-          for name in ('Content-Security-Policy', 'Cross-Origin-Resource-Policy', 'X-Content-Type-Options', 'X-Frame-Options', 'Referrer-Policy'):
-              assert len(resp.headers.get_all(name) or []) == 1, name  # a repeated header is invalid
           assert resp.headers.get('Via') is None and resp.headers.get('Server') is None
           version = json.load(resp)
           assert version == {'mode': 'api', 'version': 'v0.0.0-ci'}, version

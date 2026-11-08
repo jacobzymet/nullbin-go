@@ -18,7 +18,8 @@ import (
 // ContentSecurityPolicy is sent on every response. 'wasm-unsafe-eval'
 // lets the bundled libsodium compile its WebAssembly; it does not allow
 // JavaScript eval or any other script source. img-src allows data: only
-// because Bootstrap's form controls use inline SVG data URIs.
+// because Bootstrap's form controls use inline SVG data URIs, and blob: for
+// image previews, which the page makes itself from verified attachments.
 const ContentSecurityPolicy = "default-src 'none'; " +
 	"script-src 'self' 'wasm-unsafe-eval'; " +
 	"style-src 'self'; " +

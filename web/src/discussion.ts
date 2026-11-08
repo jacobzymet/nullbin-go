@@ -223,7 +223,7 @@ function describe(e: unknown): string {
   if (e instanceof ApiError) {
     if (e.status === 404) return 'This discussion is no longer available.';
     if (e.status === 429) return 'You’re commenting too quickly. Wait a moment.';
-    if (e.status === 409) return 'This discussion is full.';
+    if (e.status === 409) return e.message.includes('full') ? 'This discussion is full.' : 'Another comment was being saved. Try again.';
     if (e.status === 413) return 'This comment is too long.';
   }
   return 'The comment could not be posted. Try again.';

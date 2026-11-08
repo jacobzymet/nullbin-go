@@ -130,6 +130,20 @@ export function initCreate(draft?: { text: string; file: File | null }): void {
   window.addEventListener('dragover', (e) => hasFiles(e) && e.preventDefault());
   window.addEventListener('drop', (e) => hasFiles(e) && e.preventDefault());
 
+  // Pasting an image (a screenshot, or "Copy image" in a browser) or copied
+  // files attaches them. Text on the clipboard always pastes as text, and
+  // other fields (such as the password) are left alone.
+  document.addEventListener('paste', (e) => {
+    if (el('create').hidden || form.getAttribute('aria-busy') === 'true') return;
+    const target = e.target;
+    if (target !== text && target instanceof HTMLElement && target.closest('input, textarea, select, [contenteditable]')) return;
+    const data = e.clipboardData;
+    if (!data || data.files.length === 0 || data.getData('text/plain') !== '') return;
+    e.preventDefault();
+    const extension: Record<string, string> = { 'image/png': '.png', 'image/jpeg': '.jpg', 'image/gif': '.gif', 'image/webp': '.webp' };
+    addFiles([...data.files].map((f) => (f.name ? f : new File([f], `pasted-image${extension[f.type] ?? ''}`, { type: f.type }))));
+  });
+
   const updateCount = () => {
     const n = text.value.length;
     charCount.textContent = `${n.toLocaleString()} ${n === 1 ? 'character' : 'characters'}`;

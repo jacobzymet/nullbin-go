@@ -48,6 +48,18 @@ import /etc/caddy/nullbin/cloudflare-{$CLOUDFLARE:false}.caddy
 	request_body {
 		max_size 9MB
 	}
+	# Security headers for every response, including those Caddy makes
+	# itself: not found, request too large, the API unreachable, and the
+	# Cloudflare-only refusal.
+	header {
+		Content-Security-Policy "default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; sandbox"
+		Referrer-Policy no-referrer
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Cross-Origin-Opener-Policy same-origin
+		Cross-Origin-Resource-Policy same-origin
+		Strict-Transport-Security "max-age=31536000"
+	}
 	header -Server
 	header -Via
 	import edge-site
@@ -57,8 +69,16 @@ import /etc/caddy/nullbin/cloudflare-{$CLOUDFLARE:false}.caddy
 			# trusts this header only from Caddy, so nothing a client or another
 			# proxy adds can reach it.
 			header_up X-Forwarded-For {client_ip}
-			header_down Content-Security-Policy "default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; sandbox"
-			header_down X-Content-Type-Options nosniff
+			# The site sets these for every response (above). The API's own
+			# copies are dropped: a header sent twice, such as
+			# Cross-Origin-Resource-Policy, can be ignored by browsers.
+			header_down -Content-Security-Policy
+			header_down -Referrer-Policy
+			header_down -X-Content-Type-Options
+			header_down -X-Frame-Options
+			header_down -Cross-Origin-Opener-Policy
+			header_down -Cross-Origin-Resource-Policy
+			header_down -Strict-Transport-Security
 			header_down -Service-Worker-Allowed
 			header_down -Set-Cookie
 		}

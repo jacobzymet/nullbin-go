@@ -14,6 +14,7 @@ import { spawn, execFileSync, type ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import net from 'node:net';
+import { crc32, deflateSync } from 'node:zlib';
 import { createServer, type Server } from 'node:http';
 import { frontendHeaders } from '../../frontend.mjs';
 import { tmpdir } from 'node:os';
@@ -380,6 +381,12 @@ test('text paste: encrypt, share, decrypt; HTML in the paste stays text', async 
   assert.equal(await h.page.isChecked('#burn'), false);
   assert.equal(await h.page.isChecked('#discussion'), false);
   assert.equal(h.apiCalls.length, 1, 'cloning makes a draft without fetching or publishing');
+  const left = await h.page.evaluate(() => ({
+    view: document.getElementById('view')!.textContent!,
+    email: document.getElementById('view-email')!.getAttribute('href'),
+  }));
+  assert.ok(!left.view.includes(text), 'the opened text leaves the page when cloning');
+  assert.equal(left.email, null, 'the secret link leaves the page when cloning');
   await h.page.fill('#text', 'Edited clone');
   await h.page.click('#create-submit');
   await h.page.waitForSelector('#result:not([hidden])');
@@ -484,6 +491,128 @@ test('several files travel as one verified zip with clean names', async () => {
   await h.context.close();
 });
 
+/** A real, decodable PNG with a red pixel in its first row. */
+function makePng(width: number, height: number): Buffer {
+  const chunk = (type: string, data: Buffer) => {
+    const body = Buffer.concat([Buffer.from(type, 'latin1'), data]);
+    const out = Buffer.alloc(4 + body.length + 4);
+    out.writeUInt32BE(data.length, 0);
+    body.copy(out, 4);
+    out.writeUInt32BE(crc32(body), 4 + body.length);
+    return out;
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr.set([8, 6, 0, 0, 0], 8);
+  const raw = Buffer.alloc(height * (1 + width * 4));
+  raw.set([255, 0, 0, 255], 1);
+  return Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk('IHDR', ihdr), chunk('IDAT', deflateSync(raw)), chunk('IEND', Buffer.alloc(0))]);
+}
+
+/** Pastes into the focused element (or the page), as the browser would. */
+async function pasteInto(page: Page, selector: string | null, files: { name: string; type: string; bytes: number[] }[], text = '') {
+  return page.evaluate(({ selector, files, text }) => {
+    const data = new DataTransfer();
+    for (const f of files) data.items.add(new File([new Uint8Array(f.bytes)], f.name, { type: f.type }));
+    if (text) data.setData('text/plain', text);
+    const target = selector ? document.querySelector(selector)! : document.body;
+    if (target instanceof HTMLElement) target.focus();
+    const event = new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true });
+    target.dispatchEvent(event);
+    return event.defaultPrevented;
+  }, { selector, files, text });
+}
+
+test('a pasted image becomes an attachment, and is shown only when the reader asks', async () => {
+  const png = makePng(40, 30);
+  const h = await open();
+  await goto(h, `${origin}/`);
+  await h.page.fill('#text', 'screenshot attached');
+  const image = { name: 'image.png', type: 'image/png', bytes: [...png] };
+  // Text on the clipboard pastes as text, and the password field never attaches.
+  assert.equal(await pasteInto(h.page, '#text', [image], 'some text'), false);
+  await h.page.check('#password-switch');
+  assert.equal(await pasteInto(h.page, '#password', [image]), false);
+  await h.page.uncheck('#password-switch');
+  assert.equal(await h.page.locator('#file-list .nb-file-chip').count(), 0);
+  assert.equal(await pasteInto(h.page, '#text', [image]), true);
+  assert.equal(await pasteInto(h.page, null, [{ ...image, name: '' }]), true, 'pasting with nothing focused works too');
+  assert.deepEqual(await h.page.locator('#file-list .nb-file-chip-name').allTextContents(), ['image.png', 'pasted-image.png']);
+  await h.page.click('#file-list .nb-file-chip:nth-child(2) .nb-chip-x');
+  await h.page.click('#create-submit');
+  await h.page.waitForSelector('#result', { state: 'visible', timeout: 60_000 });
+  const share = `${await h.page.textContent('#share-server')}${await h.page.textContent('#share-key')}`;
+  await h.check();
+  await h.context.close();
+
+  const r = await open({ noFileSystemAccess: true });
+  await goto(r, share);
+  await r.page.waitForSelector('#view-file-card', { state: 'visible', timeout: 60_000 });
+  const calls = r.apiCalls.length;
+  assert.equal(await r.page.getAttribute('#image-show', 'aria-expanded'), 'false');
+  assert.equal(await r.page.locator('#image-preview img').count(), 0, 'nothing is decoded before the reader asks');
+  await r.page.click('#image-show');
+  await r.page.waitForFunction(() => (document.querySelector('#image-preview img') as HTMLImageElement | null)?.complete);
+  const shown = await r.page.evaluate(async () => {
+    const img = document.querySelector('#image-preview img') as HTMLImageElement;
+    // Once shown, its address is revoked: loading it again fails.
+    const still = await new Promise<boolean>((resolve) => {
+      const again = new Image();
+      again.onload = () => resolve(true);
+      again.onerror = () => resolve(false);
+      again.src = img.src;
+    });
+    return { width: img.naturalWidth, height: img.naturalHeight, src: img.src.slice(0, 5), still, alt: img.alt };
+  });
+  assert.deepEqual(shown, { width: 40, height: 30, src: 'blob:', still: false, alt: 'Preview of image.png' });
+  assert.equal(r.apiCalls.length, calls, 'showing the image fetches nothing');
+  assert.equal(await r.page.getAttribute('#image-show', 'aria-expanded'), 'true');
+  await r.page.click('#image-show');
+  assert.equal(await r.page.locator('#image-preview img').count(), 0, 'hiding removes the image');
+  await r.page.click('#image-show');
+  await r.page.waitForSelector('#image-preview img');
+  const [download] = await Promise.all([r.page.waitForEvent('download'), r.page.click('#save-file')]);
+  assert.ok((await readFile(await download.path())).equals(png), 'the saved file is the original image');
+  await r.page.click('#view-clone');
+  await r.page.waitForSelector('#create:not([hidden])');
+  assert.equal(await r.page.locator('#image-preview img').count(), 0, 'cloning removes the image from the page');
+  assert.deepEqual(await r.page.locator('#file-list .nb-file-chip-name').allTextContents(), ['image.png']);
+  await r.check(/^console error: Failed to load resource: net::ERR_FILE_NOT_FOUND$/); // the revoked-address probe above
+  await r.context.close();
+});
+
+test('files that only claim to be images are never shown', async () => {
+  const svg = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"><script>alert(2)</script></svg>');
+  const huge = makePng(1, 1);
+  huge.writeUInt32BE(20_000, 16); // the header claims 20000 x 1 pixels
+  const cases = [
+    { name: 'disguised.png', mimeType: 'image/png', buffer: svg, offered: true },
+    { name: 'html.jpg', mimeType: 'image/jpeg', buffer: Buffer.from('<!doctype html><script>alert(1)</script>'), offered: true },
+    { name: 'huge.png', mimeType: 'image/png', buffer: huge, offered: true },
+    { name: 'drawing.svg', mimeType: 'image/svg+xml', buffer: svg, offered: false },
+    { name: 'real.png', mimeType: 'application/octet-stream', buffer: makePng(2, 2), offered: false },
+  ];
+  for (const c of cases) {
+    const { share } = await createPaste({ text: c.name, file: { name: c.name, mimeType: c.mimeType, buffer: c.buffer } });
+    const r = await open({ noFileSystemAccess: true });
+    await goto(r, share);
+    await r.page.waitForSelector('#view-file-card', { state: 'visible', timeout: 60_000 });
+    assert.equal(await r.page.isVisible('#image-show'), c.offered, `${c.name}: offered`);
+    if (c.offered) {
+      await r.page.click('#image-show');
+      await r.page.waitForSelector('#image-note', { state: 'visible' });
+      assert.match(await r.page.textContent('#image-note') ?? '', /can’t be shown as an image/, c.name);
+      assert.equal(await r.page.isVisible('#image-show'), false, `${c.name}: no second try`);
+    }
+    assert.equal(await r.page.locator('#image-preview img').count(), 0, `${c.name}: never shown`);
+    const [download] = await Promise.all([r.page.waitForEvent('download'), r.page.click('#save-file')]);
+    assert.ok((await readFile(await download.path())).equals(c.buffer), `${c.name}: still saves`);
+    await r.check();
+    await r.context.close();
+  }
+});
+
 test('password + file paste: wrong password, retry, verified download', async () => {
   const content = Buffer.alloc(300_000);
   for (let i = 0; i < content.length; i++) content[i] = (i * 31 + 7) & 0xff;
@@ -515,6 +644,8 @@ test('password + file paste: wrong password, retry, verified download', async ()
   assert.equal(await h.page.inputValue('#text'), 'see attachment');
   assert.equal(await h.page.textContent('#file-list .nb-file-chip-name'), 'report.pdf');
   assert.equal(await h.page.isChecked('#password-switch'), false, 'clones do not reuse the original password');
+  assert.equal(await h.page.textContent('#view-filename'), '', 'the opened file details leave the page when cloning');
+  assert.equal(await h.page.textContent('#view-mime'), '');
   await h.page.fill('#text', '');
   await h.page.click('#create-submit');
   await h.page.waitForSelector('#result:not([hidden])');

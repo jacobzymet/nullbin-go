@@ -826,6 +826,30 @@ func TestCommentsRoundTrip(t *testing.T) {
 	}
 }
 
+// A comment is never written over another one, and a listing that fails is
+// an error, not an empty discussion.
+func TestCommentNeverReplacesAnother(t *testing.T) {
+	s, _, _ := newTestStore(t)
+	c, token := publishDiscussion(t, s)
+	if _, err := s.AddComment(c.ID, token, []byte("first")); err != nil {
+		t.Fatal(err)
+	}
+	cdir := path.Join(dirPastes, c.ID, dirComments)
+	if err := s.createFile(cdir, "000001", []byte("replacement")); !errors.Is(err, fs.ErrExist) {
+		t.Fatalf("createFile over an existing comment: %v", err)
+	}
+	got, err := allComments(s, c.ID, token)
+	if err != nil || len(got) != 1 || string(got[0]) != "first" {
+		t.Fatalf("comments after the refused write: %q %v", got, err)
+	}
+	if names, err := s.commentNames(path.Join(cdir, "000001")); err == nil {
+		t.Fatalf("listing a file instead of a folder: %v, no error", names)
+	}
+	if names, err := s.commentNames(path.Join(dirPastes, c.ID, "missing")); err != nil || names != nil {
+		t.Fatalf("a missing folder means no comments: %v %v", names, err)
+	}
+}
+
 func TestCommentTokenRequired(t *testing.T) {
 	s, _, _ := newTestStore(t)
 	c, token := publishDiscussion(t, s)

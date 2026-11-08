@@ -95,6 +95,15 @@ test('safeFilename strips paths and control characters', () => {
     [null, 'download'],
     ['...', 'download'],
     ['x'.repeat(300), 'x'.repeat(200)],
+    // Windows device names, which would not save as a normal file.
+    ['CON', '_CON'],
+    ['nul.txt', '_nul.txt'],
+    ['COM1', '_COM1'],
+    ['lpt9.log', '_lpt9.log'],
+    ['CONOUT$', '_CONOUT$'],
+    ['aux .txt', '_aux .txt'],
+    ['console.txt', 'console.txt'],
+    ['report. . ', 'report'],
   ];
   for (const [input, want] of cases) assert.equal(safeFilename(input), want, String(input));
 });
@@ -133,7 +142,8 @@ test('a genuinely out-of-order chunk is an error', async () => {
 
 
 test('text preview bounds line allocation and layout while preserving full counts', () => {
-  for (const [text, lines] of [['', 1], ['one', 1], ['one\n', 1], ['one\r\ntwo', 2], ['\n\n', 2]] as const) {
+  // A lone \r is a line break too, as the browser displays it.
+  for (const [text, lines] of [['', 1], ['one', 1], ['one\n', 1], ['one\r\ntwo', 2], ['\n\n', 2], ['a\rb\rc', 3], ['a\r\rb', 3], ['one\r', 1], ['a\r\nb\rc\n', 3]] as const) {
     assert.deepEqual(textPreview(text), { text, lines, truncated: false });
   }
   const text = '\n'.repeat(8_000_000);
@@ -147,6 +157,7 @@ test('text preview bounds line allocation and layout while preserving full count
   const unicode = textPreview('x'.repeat(MAX_PREVIEW_CHARS - 1) + '😀');
   assert.equal(unicode.text.length, MAX_PREVIEW_CHARS - 1);
   assert.equal(textPreview('row\r\n'.repeat(MAX_PREVIEW_LINES + 1)).text.split('\r\n').length, MAX_PREVIEW_LINES);
+  assert.equal(textPreview('row\r'.repeat(MAX_PREVIEW_LINES + 1)).text.split('\r').length, MAX_PREVIEW_LINES);
 });
 
 test('remaining-open metadata accepts valid counts and legacy responses, and rejects malformed counts', async () => {

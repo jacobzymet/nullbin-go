@@ -26,8 +26,10 @@ reading are all built in. There are no accounts and no database.
 Nullbin works in current Chrome, Edge, Firefox and Safari (browsers from
 mid-2022 on; Safari 16.4 or later). Older browsers cannot open it.
 
-1. Enter text, attach files, or both. Several files are sent as one zip
-   archive, which the reader downloads and opens.
+1. Enter text, attach files, or both. Drop files on the page or paste an
+   image (such as a screenshot) to attach it. Several files are sent as one
+   zip archive, which the reader downloads and opens. Readers can view an
+   attached PNG, JPEG, GIF or WebP image with **Show image**.
 2. Choose how long the paste lasts, and any options: a password, a
    discussion, or burn after reading.
 3. Select **Create** and share the **whole link, including everything after

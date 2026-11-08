@@ -113,7 +113,8 @@ func (s *Store) countPaste(st *Stats, dir, id string) {
 		st.Discussion++
 		cdir := path.Join(dir, dirComments)
 		if fi, err := s.root.Lstat(cdir); err == nil && fi.IsDir() {
-			for _, name := range s.commentNames(cdir) {
+			names, _ := s.commentNames(cdir) // stats are best effort
+			for _, name := range names {
 				if fi, err := s.root.Lstat(path.Join(cdir, name)); err == nil && fi.Mode().IsRegular() {
 					st.Comments++
 					st.CommentBytes = addCapped(st.CommentBytes, fi.Size())

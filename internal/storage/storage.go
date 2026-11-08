@@ -810,7 +810,10 @@ func (s *Store) AddComment(id, commentToken string, ciphertext []byte) (int, err
 	if fi, err := s.root.Lstat(cdir); err != nil || !fi.IsDir() {
 		return 0, ErrCorrupt
 	}
-	names := s.commentNames(cdir)
+	names, err := s.commentNames(cdir)
+	if err != nil {
+		return 0, err
+	}
 	n := len(names)
 	if n >= MaxComments {
 		return 0, ErrDiscussionFull
@@ -832,7 +835,13 @@ func (s *Store) AddComment(id, commentToken string, ciphertext []byte) (int, err
 		return 0, err
 	}
 	name := fmt.Sprintf("%06d", next)
-	if err := s.writeFile(cdir, name, ciphertext); err != nil {
+	if err := s.createFile(cdir, name, ciphertext); err != nil {
+		// A comment already has this name, so the listing above was wrong.
+		// Nothing was written; the client can try again.
+		if errors.Is(err, fs.ErrExist) {
+			s.grow(dir, -charge)
+			return 0, ErrConflict
+		}
 		// Refund only if the comment is not there: the write may have
 		// failed after the file was already in place.
 		if _, lerr := s.root.Lstat(path.Join(cdir, name)); lerr != nil {
@@ -858,7 +867,10 @@ func (s *Store) Comments(id, commentToken string) (iter.Seq2[[]byte, error], err
 	if fi, err := s.root.Lstat(cdir); err == nil && !fi.IsDir() {
 		return nil, ErrCorrupt
 	}
-	names := s.commentNames(cdir)
+	names, err := s.commentNames(cdir)
+	if err != nil {
+		return nil, err
+	}
 	if len(names) > MaxComments {
 		return nil, ErrCorrupt
 	}
@@ -902,14 +914,22 @@ func (s *Store) discussion(dir, id, commentToken string) (Meta, error) {
 }
 
 // commentNames lists comment files ("000001", "000002", ...) in order.
-// Anything else in the directory (such as a temp file) is skipped.
-func (s *Store) commentNames(cdir string) []string {
+// Anything else in the directory (such as a temp file) is skipped. A
+// missing directory means no comments; any other error is returned, since
+// a partial list would hide comments or reuse an existing name.
+func (s *Store) commentNames(cdir string) ([]string, error) {
 	f, err := s.root.Open(cdir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	defer f.Close()
-	names, _ := f.Readdirnames(-1)
+	names, err := f.Readdirnames(-1)
+	if err != nil {
+		return nil, err
+	}
 	var out []string
 	for _, n := range names {
 		if validCommentName(n) {
@@ -917,7 +937,7 @@ func (s *Store) commentNames(cdir string) []string {
 		}
 	}
 	sort.Strings(out)
-	return out
+	return out, nil
 }
 
 func validCommentName(name string) bool {
@@ -1253,6 +1273,25 @@ func (s *Store) writeJSON(dir, name string, v any) error {
 
 // writeFile writes dir/name atomically: temp file, fsync, rename, fsync dir.
 func (s *Store) writeFile(dir, name string, data []byte) error {
+	return s.placeFile(dir, name, data, s.root.Rename)
+}
+
+// createFile is writeFile for a name that must not exist yet: it fails with
+// fs.ErrExist instead of replacing a file. A hard link, unlike a rename,
+// never replaces its target.
+func (s *Store) createFile(dir, name string, data []byte) error {
+	return s.placeFile(dir, name, data, func(tmp, final string) error {
+		if err := s.root.Link(tmp, final); err != nil {
+			return err
+		}
+		s.root.Remove(tmp) // a leftover temp name is skipped when listing
+		return nil
+	})
+}
+
+// placeFile writes data to a temp file, syncs it, and puts it in place
+// with place(temp, final).
+func (s *Store) placeFile(dir, name string, data []byte, place func(tmp, final string) error) error {
 	tmp := path.Join(dir, name+".tmp-"+randomHex(8))
 	f, err := s.root.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, filePerm)
 	if err != nil {
@@ -1266,7 +1305,7 @@ func (s *Store) writeFile(dir, name string, data []byte) error {
 		err = cerr
 	}
 	if err == nil {
-		err = s.root.Rename(tmp, path.Join(dir, name))
+		err = place(tmp, path.Join(dir, name))
 	}
 	if err != nil {
 		s.root.Remove(tmp)
