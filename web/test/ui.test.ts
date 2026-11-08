@@ -216,3 +216,16 @@ test('text that can look different from what it contains is flagged', () => {
     assert.equal(hasHiddenChars(ok), false, `${JSON.stringify(ok)} must not be flagged`);
   }
 });
+
+test('blank-looking characters cannot pad names, and line separators are flagged in text', async () => {
+  const { cleanName } = await import('../src/comments.ts');
+  const { stripHiddenChars } = await import('../src/hidden.ts');
+  const c = (n: number) => String.fromCharCode(n);
+  for (const n of [0x2028, 0x2029, 0x115f, 0x1160, 0x3164, 0xffa0, 0x2800]) {
+    assert.equal(safeFilename(`invoice${c(n)}.pdf.exe`), 'invoice_.pdf.exe', n.toString(16));
+    assert.equal(cleanName(`ad${c(n)}min`), 'admin', n.toString(16));
+    assert.equal(stripHiddenChars(`image/png${c(n)}`), 'image/png', n.toString(16));
+  }
+  assert.equal(hasHiddenChars(`a${c(0x2028)}b`), true, 'a line separator is flagged in text');
+  assert.equal(hasHiddenChars(`Braille ${c(0x2800)}${c(0x2801)}`), false, 'Braille text is not flagged');
+});

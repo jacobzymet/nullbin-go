@@ -7,14 +7,19 @@
 // paste display differently from what copying it yields ("Trojan Source",
 // CVE-2021-42574). Zero-width joiners and non-joiners are allowed: emoji and
 // Persian or Indic scripts use them. So is a byte-order mark at the start.
-const HIDDEN_CHARS = /(?![\u200C\u200D\t\n\r])[\p{Cf}\p{Cc}]/u;
+const HIDDEN_CHARS = /(?![\u200C\u200D\t\n\r])[\p{Cf}\p{Cc}\p{Zl}\p{Zp}]/u;
 
 /** Reports whether text contains characters that can disguise what it says. */
 export function hasHiddenChars(text: string): boolean {
   return HIDDEN_CHARS.test(text.startsWith('\uFEFF') ? text.slice(1) : text);
 }
 
-/** Removes every character hasHiddenChars would flag (and line breaks and tabs). */
+/**
+ * Removes every character hasHiddenChars would flag (and line breaks and
+ * tabs), plus blank-looking fillers (Hangul fillers, the Braille blank) that
+ * can pad a short label such as a file type. Not used on paste text, where
+ * those characters are legitimate.
+ */
 export function stripHiddenChars(text: string): string {
-  return text.replace(/(?![\u200C\u200D])[\p{Cf}\p{Cc}]/gu, '');
+  return text.replace(/(?![\u200C\u200D])[\p{Cf}\p{Cc}\p{Zl}\p{Zp}\u115F\u1160\u3164\uFFA0\u2800]/gu, '');
 }

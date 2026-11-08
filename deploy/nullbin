@@ -318,14 +318,20 @@ $changes" >&2
     fi
   }
 
-  # owner/name of the GitHub repository this checkout came from.
+  # owner/name of the GitHub repository this checkout came from, whether
+  # it was cloned over HTTPS (with or without credentials) or SSH.
   repo_slug() {
     local url slug
     url=$(g remote get-url origin)
     url=${url%.git}
     url=${url%/}
-    slug=${url#https://github.com/}
-    slug=${slug#git@github.com:}
+    if [[ $url =~ ^https://([^/@]+@)?github\.com/(.+)$ ]] || [[ $url =~ ^ssh://git@github\.com(:[0-9]+)?/(.+)$ ]]; then
+      slug=${BASH_REMATCH[2]}
+    elif [[ $url =~ ^git@github\.com:(.+)$ ]]; then
+      slug=${BASH_REMATCH[1]}
+    else
+      return 1
+    fi
     [[ $slug =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || return 1
     echo "$slug"
   }
@@ -339,10 +345,16 @@ $changes" >&2
 
   # The HTTP status GitHub gives for a release with this tag: 200 if it is
   # published, 404 if not, anything else (000 = no connection) if unknown.
+  # A few tries, since GitHub's API sometimes stalls or rate-limits briefly.
   release_status() {
-    local slug
+    local slug code try
     slug=$(repo_slug) || { echo 000; return; }
-    curl -s -o /dev/null -w '%{http_code}' --max-time 20 "https://api.github.com/repos/$slug/releases/tags/$1" || true
+    for try in 1 2 3; do
+      code=$(curl -s -o /dev/null -w '%{http_code}' --proto '=https' --max-time 20 "https://api.github.com/repos/$slug/releases/tags/$1" || true)
+      [[ $code == 200 || $code == 404 ]] && break
+      [[ $try == 3 ]] || sleep 5
+    done
+    echo "$code"
   }
 
   case $cmd in
@@ -444,7 +456,7 @@ $changes" >&2
         case $(release_status "$target") in
           200) ;;
           404) die "$target is not a published release. See the Releases page on GitHub." ;;
-          *) echo "Could not ask GitHub whether $target is a published release; installing it because it is on the main branch." >&2 ;;
+          *) die "could not confirm with GitHub that $target is a published release, so nothing was changed. Check that this server can reach api.github.com, then try again in a few minutes." ;;
         esac
       fi
       # Edited files would be overwritten, and files added to the checkout
@@ -458,7 +470,8 @@ Set them aside with: git -C $repo stash --include-untracked (and move ignored on
       local previous snapshot=$deploy/$config.before-update
       previous=$(g rev-parse HEAD)
       as_owner cp -p -- "$deploy/$config" "$snapshot"
-      g -c advice.detachedHead=false checkout --quiet "$target"
+      # The verified tag itself, never a local branch with the same name.
+      g -c advice.detachedHead=false checkout --quiet --detach "refs/tags/$target"
       # Start with the release's own copy of this script, so changes to how
       # Nullbin starts take effect with the update that brings them.
       if "$deploy/nullbin" start; then

@@ -48,7 +48,7 @@ const WINDOWS_DEVICE = /^(con|prn|aux|nul|com[0-9¹²³]|lpt[0-9¹²³]|conin\$|
  * Used for single downloads and for names inside archives.
  */
 export function cleanFileName(name: string, fallback: string): string {
-  let cleaned = name.normalize('NFC').replace(/[\p{Cf}\p{Cc}/\\:*?"<>|]/gu, '_').replace(/^[.\s]+/, '');
+  let cleaned = name.normalize('NFC').replace(/[\p{Cf}\p{Cc}\p{Zl}\p{Zp}\u115F\u1160\u3164\uFFA0\u2800/\\:*?"<>|]/gu, '_').replace(/^[.\s]+/, '');
   cleaned = [...cleaned].slice(0, 200).join('').replace(/[.\s]+$/, '');
   if (WINDOWS_DEVICE.test(cleaned)) cleaned = `_${cleaned}`;
   return cleaned || fallback;

@@ -249,7 +249,9 @@ function renderFile(file: AsyncGenerator<Uint8Array>, filename: string | null, s
     load: async () => {
       save.disabled = true;
       imageShow.disabled = true;
-      try { return savedFile ?? await attachment.clone(); }
+      // The verified copy in memory when there is one (up to 64 MiB), not
+      // the saved file on disk, which could have changed since.
+      try { return attachment.canClone || !savedFile ? await attachment.clone() : savedFile; }
       catch (e) { void cancel(); throw e; }
       finally { save.disabled = false; imageShow.disabled = false; }
     },

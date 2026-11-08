@@ -279,7 +279,10 @@ export async function openPaste(
   }
 
   const { state, res } = opened;
-  if (res.tag !== TAG_MESSAGE && res.tag !== TAG_FINAL) throw new PasteError('format', 'Malformed paste data.');
+  if (res.tag !== TAG_MESSAGE && res.tag !== TAG_FINAL) {
+    sodium.memzero(master);
+    throw new PasteError('format', 'Malformed paste data.');
+  }
   const final = res.tag === TAG_FINAL;
   let meta: PasteMeta;
   try {

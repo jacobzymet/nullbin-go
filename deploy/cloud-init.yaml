@@ -55,6 +55,7 @@ runcmd:
     set -eu
     version=$(curl -fsSL https://api.github.com/repos/jacobzymet/nullbin-go/releases/latest | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p')
     test -n "$version"
+    printf "%s" "$version" | grep -Eqx "v[0-9]+[.][0-9]+[.][0-9]+" || { echo "nullbin: could not look up the latest release" >&2; exit 1; }
     git clone --branch "$version" https://github.com/jacobzymet/nullbin-go.git /opt/nullbin
   - [install, -m, "0600", /opt/nullbin-settings.env, /opt/nullbin/deploy/.env]
   - [/opt/nullbin/deploy/nullbin, start]
