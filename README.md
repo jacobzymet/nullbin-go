@@ -52,6 +52,7 @@ After opening a paste:
 | **Clone** | Copies the text and attachment into a new draft, where you choose new settings. Comments and the password are not copied. |
 | **Raw text** | Opens the full text in a new tab as plain text. |
 | **Save document** | Downloads the full text as `paste.txt`. Attachments have their own **Save file** button. |
+| **Show preview** | Shows a text attachment (such as `.txt`, `.md`, `.json` or `.csv`) as plain text, only after you click. JSON and Markdown stay literal source text. Images use **Show image**. |
 | **Email** | Opens your email app with the link. The text and password are not included and nothing is sent automatically. |
 | **QR code** | Shows a QR code of the link, made in your browser. |
 
@@ -63,6 +64,12 @@ a warning above it.
 Large attachments: desktop Chrome and Edge save files of any size directly
 to disk. Other browsers can save attachments up to 64 MiB. Clone works for
 attachments up to 64 MiB, or for larger ones after you save them.
+
+Previews authenticate the complete attachment first. Text previews accept
+UTF-8 files up to 1 MiB and display at most 5,000 lines or 100,000 characters.
+Documents such as PDFs are not previewed, to keep document parsers out of the
+page: save them and open them in your usual viewer. Previews do not make files
+safe to open elsewhere.
 
 ## Try it locally
 

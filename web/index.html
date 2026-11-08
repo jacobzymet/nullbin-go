@@ -260,13 +260,17 @@
           <p id="view-filename" class="nb-file-name"></p>
           <p class="nb-meta mb-0"><span id="view-filesize"></span> · <span id="view-mime"></span></p>
         </div>
-        <button id="image-show" type="button" class="btn nb-btn-secondary" aria-controls="image-preview" aria-expanded="false" hidden><svg class="nb-i" aria-hidden="true"><use href="#i-eye"/></svg><span>Show image</span></button>
-        <button id="save-file" type="button" class="btn nb-btn-primary"><svg class="nb-i" aria-hidden="true"><use href="#i-download"/></svg><span>Save file</span></button>
+        <button id="image-show" type="button" class="btn nb-btn-secondary" aria-controls="image-preview document-preview" aria-expanded="false" hidden><svg class="nb-i" aria-hidden="true"><use href="#i-eye"/></svg><span>Show image</span></button>
+        <button id="save-file" type="button" class="btn nb-btn-primary" aria-describedby="file-save-help"><svg class="nb-i" aria-hidden="true"><use href="#i-download"/></svg><span>Save file</span></button>
         <p id="file-saved" class="nb-file-saved nb-tone-ok" tabindex="-1" hidden><svg class="nb-i" aria-hidden="true"><use href="#i-check"/></svg>Verified and saved</p>
         <p id="file-error" class="nb-note nb-tone-danger nb-file-error" role="alert" tabindex="-1" hidden></p>
         <figure id="image-preview" class="nb-image-preview" hidden></figure>
+        <div id="document-preview" class="nb-document-preview" role="region" aria-label="Attachment preview" hidden></div>
         <p id="image-note" class="nb-note nb-file-error" role="status" hidden></p>
-        <p class="nb-file-note">Nullbin opens nothing by itself and shows images only when you ask. Only save files you expect.</p>
+        <div id="file-save-help" class="nb-file-note">
+          <p id="file-save-note" class="mb-2" hidden>Files save directly to your device, without adding a browser download-history entry. This keeps memory use low for large files. Decryption happens locally, and files are fully verified before saving completes.</p>
+          <p class="mb-0">Nullbin opens nothing by itself and shows previews only when you ask. Only save files you expect.</p>
+        </div>
       </div>
 
       <!-- Discussion -->

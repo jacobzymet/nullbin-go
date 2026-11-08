@@ -33,7 +33,9 @@ These always need an explicit review and approval from the maintainer
 - Go: standard library only. Plain code over abstractions.
 - Frontend: no framework, no Bootstrap JS. Never use `innerHTML` or other
   HTML-injection APIs, inline scripts, inline styles or `style` attributes.
-  Show decrypted data with `textContent`; offer files as downloads only.
+  Show decrypted text with `textContent`. Attachment previews stay opt-in,
+  fully authenticated and bounded, and show only images and plain text: no
+  document renderers, parsers, workers, links, forms or scripting.
 - Pages must not load anything from another origin.
 - Logs must never contain IPs, paste IDs, tokens, user agents, paths or
   request bodies.

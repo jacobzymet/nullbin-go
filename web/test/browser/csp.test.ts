@@ -157,7 +157,8 @@ async function open(options: { colorScheme?: 'light' | 'dark'; noFileSystemAcces
     if (noFsa) Object.defineProperty(window, 'showSaveFilePicker', { value: undefined });
   }, options.noFileSystemAccess ?? false);
 
-  page.on('request', (req) => {
+  // The whole context: requests from workers count too.
+  context.on('request', (req) => {
     const u = new URL(req.url());
     if (u.protocol === 'data:' || u.protocol === 'blob:') return;
     if (u.origin !== origin && !(split && u.origin === apiOrigin && u.pathname.startsWith('/api/v1/'))) problems.push(`request to another origin: ${req.url()}`);
@@ -291,6 +292,11 @@ test('the browser itself blocks HTML injection and isolates the page', async () 
     }
   });
   assert.equal(blocked, true, 'innerHTML must be refused by Trusted Types');
+  const workerRefused = await h.page.evaluate(() => {
+    const url = URL.createObjectURL(new Blob(['postMessage(1)'], { type: 'text/javascript' }));
+    try { new Worker(url); return false; } catch { return true; } finally { URL.revokeObjectURL(url); }
+  });
+  assert.equal(workerRefused, true, 'the page can start no workers: none are needed');
   assert.equal(await h.page.evaluate(() => crossOriginIsolated), true, 'COOP + COEP isolate the page');
   await h.context.close();
 });
@@ -627,6 +633,149 @@ test('files that only claim to be images are never shown', async () => {
     assert.ok((await readFile(await download.path())).equals(c.buffer), `${c.name}: still saves`);
     await r.check();
     await r.context.close();
+  }
+});
+
+test('text attachment previews are explicit, inert, bounded, hideable and cleared on clone', async (t) => {
+  // Read-heavy: its own rate-limit budget, like the other extra scenarios.
+  await restartAPI();
+  t.after(() => restartAPI());
+  const text = '<img src="https://example.com/never" onerror="alert(1)">\n<script>alert(2)</script>\n[link](javascript:alert(3))\n![image](https://example.com/image)\n{"__proto__":{"polluted":true}}\nHidden: \u202E';
+  for (const name of ['notes.txt', 'notes.md', 'data.json', 'data.csv']) {
+    const content = Buffer.from(text);
+    const { share } = await createPaste({ file: { name, mimeType: 'application/octet-stream', buffer: content } });
+    const h = await open({ noFileSystemAccess: true });
+    let dialogs = 0; h.page.on('dialog', (dialog) => { dialogs++; void dialog.dismiss(); });
+    await goto(h, share);
+    await h.page.waitForSelector('#view-file-card:not([hidden])');
+    assert.equal(await h.page.locator('#document-preview').textContent(), '');
+    assert.equal(await h.page.isVisible('#document-preview'), false);
+    assert.equal(await h.page.textContent('#image-show span'), 'Show preview');
+    await h.page.click('#image-show');
+    await h.page.waitForSelector('#document-preview:not([hidden])');
+    assert.equal(await h.page.textContent('#document-preview pre'), text);
+    assert.match(await h.page.textContent('#document-preview') ?? '', /invisible or direction-changing/);
+    assert.equal(await h.page.locator('#document-preview *').evaluateAll((items) => items.filter((e) => !['P', 'PRE'].includes(e.tagName)).length), 0, 'only a caption, a warning and plain text');
+    assert.equal(dialogs, 0);
+    await h.page.click('#image-show');
+    assert.equal(await h.page.textContent('#document-preview'), '');
+    await h.page.click('#image-show');
+    await h.page.waitForSelector('#document-preview:not([hidden])');
+    await h.page.click('#view-clone');
+    await h.page.waitForSelector('#create:not([hidden])');
+    assert.equal(await h.page.textContent('#document-preview'), '', 'no plaintext preview remains when cloning');
+    await h.check(); await h.context.close();
+  }
+  const { share } = await createPaste({ file: { name: 'large.txt', mimeType: 'text/plain', buffer: Buffer.from('x'.repeat(110_000)) } });
+  const h = await open(); await goto(h, share);
+  await h.page.waitForSelector('#view-file-card:not([hidden])'); await h.page.click('#image-show');
+  await h.page.waitForSelector('#document-preview pre');
+  assert.equal((await h.page.textContent('#document-preview pre'))!.length, 100_000);
+  assert.match(await h.page.textContent('#document-preview') ?? '', /limited/);
+  await h.check(); await h.context.close();
+});
+
+test('text that is not clean UTF-8, or too large, is not previewed and still saves', async (t) => {
+  // Read-heavy: its own rate-limit budget, like the other extra scenarios.
+  await restartAPI();
+  t.after(() => restartAPI());
+  const cases = [
+    { name: 'binary.txt', mimeType: 'text/plain', buffer: Buffer.from([0, 255, 1]), offered: true },
+    { name: 'escape.txt', mimeType: 'text/plain', buffer: Buffer.from([0x61, 0x1b, 0x5b, 0x33, 0x31, 0x6d]), offered: true },
+    { name: 'latin1.txt', mimeType: 'text/plain', buffer: Buffer.from([0x63, 0x61, 0x66, 0xe9]), offered: true },
+    { name: 'oversize.txt', mimeType: 'text/plain', buffer: Buffer.alloc(1024 * 1024 + 1, 65), offered: false },
+    { name: 'document.pdf', mimeType: 'application/pdf', buffer: Buffer.from('%PDF-1.7\n'), offered: false },
+    { name: 'page.html', mimeType: 'text/html', buffer: Buffer.from('<script>alert(1)</script>'), offered: false },
+  ];
+  for (const item of cases) {
+    const { share } = await createPaste({ file: { name: item.name, mimeType: item.mimeType, buffer: item.buffer } });
+    const h = await open({ noFileSystemAccess: true });
+    await goto(h, share); await h.page.waitForSelector('#view-file-card:not([hidden])');
+    assert.equal(await h.page.isVisible('#image-show'), item.offered, `${item.name}: offered`);
+    if (item.offered) {
+      await h.page.click('#image-show');
+      await h.page.waitForSelector('#image-note:not([hidden])');
+      assert.match(await h.page.textContent('#image-note') ?? '', /shown as text/, item.name);
+    }
+    assert.equal(await h.page.locator('#document-preview pre').count(), 0, `${item.name}: nothing shown`);
+    const [download] = await Promise.all([h.page.waitForEvent('download'), h.page.click('#save-file')]);
+    assert.deepEqual(await readFile(await download.path()), item.buffer, `${item.name}: still saves`);
+    await h.check(); await h.context.close();
+  }
+});
+
+test('tampered attachment data never reaches the text preview', async (t) => {
+  // Read-heavy: its own rate-limit budget, like the other extra scenarios.
+  await restartAPI();
+  t.after(() => restartAPI());
+  // Five encrypted frames; only the last is altered, so the first four would
+  // decrypt fine. Nothing may be shown until the whole attachment verifies.
+  const { share } = await createPaste({ file: { name: 'data.txt', mimeType: 'text/plain', buffer: Buffer.from('verified line\n'.repeat(22_000)) } });
+  const h = await open();
+  await h.page.route('**/api/v1/pastes/*', async (route) => {
+    const response = await route.fetch(); const body = await response.body(); body[body.length - 1]! ^= 1;
+    await route.fulfill({ response, body });
+  });
+  await goto(h, share); await h.page.waitForSelector('#view-file-card:not([hidden])');
+  await h.page.click('#image-show'); await h.page.waitForSelector('#image-note:not([hidden])');
+  assert.equal(await h.page.textContent('#document-preview'), '');
+  assert.match(await h.page.textContent('#image-note') ?? '', /Nothing was shown/);
+  await h.check(); await h.context.close();
+});
+
+test('previews read the verified copy in memory, never a saved file that changed on disk', async (t) => {
+  // Read-heavy: its own rate-limit budget, like the other extra scenarios.
+  await restartAPI();
+  t.after(() => restartAPI());
+  const original = 'verified content\n';
+  const { share } = await createPaste({ file: { name: 'notes.txt', mimeType: 'text/plain', buffer: Buffer.from(original) } });
+  const h = await open();
+  // A save location whose file is different when read back, as if another
+  // program changed it after saving.
+  await h.page.addInitScript(() => {
+    Object.defineProperty(window, 'showSaveFilePicker', {
+      value: async () => ({
+        createWritable: async () => ({ write: async () => {}, close: async () => {}, abort: async () => {} }),
+        getFile: async () => new File(['CHANGED ON DISK'], 'notes.txt', { type: 'text/plain' }),
+      }),
+    });
+  });
+  await goto(h, share); await h.page.waitForSelector('#view-file-card:not([hidden])');
+  await h.page.click('#save-file');
+  await h.page.waitForSelector('#file-saved:not([hidden])');
+  await h.page.click('#image-show');
+  await h.page.waitForSelector('#document-preview pre');
+  assert.equal(await h.page.textContent('#document-preview pre'), original);
+  await h.check(); await h.context.close();
+});
+
+test('a preview still loading when the page clears it never appears afterwards', async (t) => {
+  // Read-heavy: its own rate-limit budget, like the other extra scenarios.
+  await restartAPI();
+  t.after(() => restartAPI());
+  for (const [name, mimeType, buffer] of [['notes.txt', 'text/plain', Buffer.from('late text')], ['pixel.png', 'image/png', makePng(2, 2)]] as const) {
+    const { share } = await createPaste({ file: { name, mimeType, buffer } });
+    const h = await open();
+    // Hold the attachment's bytes until the test lets them through.
+    await h.page.addInitScript(() => {
+      const original = Blob.prototype.arrayBuffer;
+      const w = window as unknown as { __release: () => void; __held: number };
+      let release: () => void = () => {};
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      w.__held = 0;
+      w.__release = release;
+      Blob.prototype.arrayBuffer = async function (this: Blob) { w.__held++; await gate; return original.call(this); };
+    });
+    await goto(h, share); await h.page.waitForSelector('#view-file-card:not([hidden])');
+    await h.page.click('#image-show');
+    await h.page.waitForFunction(() => (window as unknown as { __held: number }).__held > 0);
+    await h.page.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pagehide')));
+    await h.page.evaluate(() => (window as unknown as { __release: () => void }).__release());
+    await h.page.waitForSelector('#image-show:enabled');
+    assert.equal(await h.page.locator('#document-preview pre, #image-preview img').count(), 0, `${name}: nothing reappears`);
+    assert.equal(await h.page.textContent('#document-preview'), '');
+    assert.equal(await h.page.getAttribute('#image-show', 'aria-expanded'), 'false');
+    await h.check(); await h.context.close();
   }
 });
 

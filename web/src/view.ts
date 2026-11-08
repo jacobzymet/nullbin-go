@@ -1,6 +1,6 @@
 // The view page: fetch the ciphertext as a stream, ask for a password if
 // the paste has one, decrypt frame by frame, show text with textContent and
-// offer the file as a download (never as a preview).
+// offer downloads and explicitly requested, fully authenticated previews.
 
 import { ApiError, fetchBurnPrefix, fetchPaste } from './api.ts';
 import { CloneableAttachment, MAX_BUFFERED_DOWNLOAD } from './attachments.ts';
@@ -27,37 +27,18 @@ import { initReaderActions, type CloneAttachment } from './reader-actions.ts';
 import { parseKeyFragment } from './link.ts';
 import { loadSodium } from './sodium.ts';
 import { cleanFileName } from './zip.ts';
-import { MAX_PREVIEW_BYTES, mayPreview } from './image.ts';
-import { clearImage, showImage } from './preview.ts';
+import { MAX_PREVIEW_BYTES } from './image.ts';
+import { attachmentPreview, MAX_TEXT_PREVIEW_BYTES, type AttachmentPreview } from './attachment-preview.ts';
+import { clearPreview, previewGeneration, showImage, showTextPreview } from './preview.ts';
+import { textPreview } from './text-preview.ts';
 
 // The File System Access API is not in TypeScript's DOM types yet.
 interface SaveFilePickerWindow {
   showSaveFilePicker?: (options: { suggestedName?: string }) => Promise<FileSystemFileHandle>;
 }
 
-/** Bound both line layout and character shaping for attacker-written text. */
-export const MAX_PREVIEW_LINES = 5000;
-export const MAX_PREVIEW_CHARS = 100_000;
-
 export { hasHiddenChars };
-
-/** Count without splitting millions of lines into a large temporary array. */
-export function textPreview(text: string): { text: string; lines: number; truncated: boolean } {
-  let lines = 1;
-  let end = Math.min(text.length, MAX_PREVIEW_CHARS);
-  // A line ends at \n, \r\n or a lone \r, since the browser shows a lone \r
-  // as a line break too.
-  for (let i = 0; i < text.length; i++) {
-    const c = text.charCodeAt(i);
-    if (c === 13 && text.charCodeAt(i + 1) === 10) continue; // the \n ends this line
-    if ((c !== 10 && c !== 13) || i === text.length - 1) continue;
-    lines++;
-    if (lines === MAX_PREVIEW_LINES + 1) end = Math.min(end, c === 10 && i > 0 && text.charCodeAt(i - 1) === 13 ? i - 1 : i);
-  }
-  // Avoid splitting a UTF-16 surrogate pair at the character limit.
-  if (end < text.length && end > 0 && /[\uD800-\uDBFF]/.test(text[end - 1]!)) end--;
-  return { text: text.slice(0, end), lines, truncated: end < text.length };
-}
+export { textPreview, MAX_PREVIEW_LINES, MAX_PREVIEW_CHARS } from './text-preview.ts';
 
 export async function initView(id: string, fragment: string): Promise<void> {
   showSection('view');
@@ -210,6 +191,7 @@ function renderFile(file: AsyncGenerator<Uint8Array>, filename: string | null, s
   el('view-filesize').textContent = formatBytes(size);
   el('view-mime').textContent = mime ? stripHiddenChars(mime) || 'type not given' : 'type not given';
   const save = el<HTMLButtonElement>('save-file');
+  show(el('file-save-note'), typeof (window as Window & SaveFilePickerWindow).showSaveFilePicker === 'function');
   const clone = el<HTMLButtonElement>('view-clone');
   const attachment = new CloneableAttachment(file, safeFilename(filename), size, mime ?? '');
   let savedFile: File | null = null;
@@ -251,8 +233,9 @@ function renderFile(file: AsyncGenerator<Uint8Array>, filename: string | null, s
       },
     );
   });
-  initImagePreview(imageShow, mayPreview(mime, size), safeFilename(filename), async () => {
-    if (savedFile) return savedFile;
+  // Previews always read the verified copy held in memory (every previewable
+  // size is kept), never the saved file on disk, which could have changed.
+  initAttachmentPreview(imageShow, attachmentPreview(safeFilename(filename), mime, size), safeFilename(filename), async () => {
     const disabled = clone.disabled;
     save.disabled = true;
     clone.disabled = true;
@@ -274,44 +257,55 @@ function renderFile(file: AsyncGenerator<Uint8Array>, filename: string | null, s
 }
 
 /**
- * The Show image button. Nothing is decoded until the reader presses it, and
+ * The preview button. Nothing is decoded until the reader presses it, and
  * then only the complete, verified attachment.
  */
-function initImagePreview(button: HTMLButtonElement, offered: boolean, name: string, load: () => Promise<File>): void {
+function initAttachmentPreview(button: HTMLButtonElement, kind: AttachmentPreview | null, name: string, load: () => Promise<File>): void {
   const note = el('image-note');
   const label = button.querySelector('span')!;
   const use = button.querySelector('use')!;
   const expanded = (on: boolean) => {
     button.setAttribute('aria-expanded', String(on));
-    label.textContent = on ? 'Hide image' : 'Show image';
+    label.textContent = kind === 'image' ? (on ? 'Hide image' : 'Show image') : (on ? 'Hide preview' : 'Show preview');
     use.setAttribute('href', on ? '#i-eye-off' : '#i-eye');
   };
   const explain = (message: string) => {
     note.textContent = message;
     reveal(note);
   };
-  show(button, offered);
+  expanded(false);
+  show(button, kind !== null);
   button.addEventListener('click', async () => {
-    if (button.disabled) return;
+    if (button.disabled || kind === null) return;
     if (button.getAttribute('aria-expanded') === 'true') {
-      clearImage();
+      clearPreview();
       expanded(false);
       return;
     }
     show(note, false);
+    clearPreview();
+    // Anything that clears previews while this one loads (Clone, leaving
+    // the page) cancels it: nothing decrypted may reappear afterwards.
+    const ticket = previewGeneration();
+    const cancelled = () => ticket !== previewGeneration() || el('view').hidden;
     const done = busy(button, 'Loading…');
     let shown = false;
     try {
       const file = await load();
-      if (file.size > MAX_PREVIEW_BYTES) throw new Error('too large');
-      shown = await showImage(new Uint8Array(await file.arrayBuffer()), name);
-      if (!shown) explain('This file can’t be shown as an image. You can still save it.');
+      if (file.size > (kind === 'image' ? MAX_PREVIEW_BYTES : MAX_TEXT_PREVIEW_BYTES)) throw new Error('too large');
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      if (cancelled()) return;
+      shown = kind === 'image' ? await showImage(bytes, name) : showTextPreview(bytes);
+      if (cancelled()) { clearPreview(); return; }
+      if (!shown) explain(kind === 'image' ? 'This file can’t be shown as an image. You can still save it.' : 'This file can’t be shown as text. You can still save it.');
     } catch (e) {
+      if (cancelled()) return;
       show(button, false);
-      explain(e instanceof PasteError ? `${e.message} Nothing was shown.` : 'The image could not be loaded. You can still try to save it.');
+      explain(e instanceof PasteError ? `${e.message} Nothing was shown.` : 'The preview could not be loaded. You can still try to save the file.');
     } finally {
       done();
     }
+    if (cancelled()) return;
     expanded(shown);
     if (!shown) show(button, false);
   });
@@ -400,6 +394,7 @@ async function saveFile(file: AsyncGenerator<Uint8Array>, name: string, size: nu
 export { MAX_BUFFERED_DOWNLOAD } from './attachments.ts';
 
 async function saveWithBlob(file: AsyncGenerator<Uint8Array>, name: string, size: number): Promise<boolean> {
+  show(el('file-save-note'), false);
   if (size > MAX_BUFFERED_DOWNLOAD) throw new PasteError('too-large', 'Saving files above 64 MiB requires a browser with streaming file saves, such as desktop Chrome or Edge.');
   let received = 0;
   const parts: Uint8Array<ArrayBuffer>[] = [];

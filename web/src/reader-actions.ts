@@ -1,7 +1,7 @@
 import { initCreate } from './create.ts';
 import { busy, el, toast } from './dom.ts';
 import { downloadBlob, openRawText } from './files.ts';
-import { clearImage } from './preview.ts';
+import { clearPreview } from './preview.ts';
 import { initShareActions } from './share.ts';
 
 export interface CloneAttachment {
@@ -19,7 +19,7 @@ function clearView(): void {
   for (const id of ['view-text-meta', 'view-filename', 'view-filesize', 'view-mime', 'reply-name']) el(id).textContent = '';
   for (const id of ['comment-text', 'comment-name']) el<HTMLInputElement | HTMLTextAreaElement>(id).value = '';
   el('view-email').removeAttribute('href');
-  clearImage();
+  clearPreview();
 }
 
 export function initReaderActions(text: string, url: string, shareable: boolean, attachment: CloneAttachment | null): void {
