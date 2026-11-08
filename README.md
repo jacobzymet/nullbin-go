@@ -579,7 +579,7 @@ Binary units are powers of 1,024. Text limits count JavaScript UTF-16 units.
 | Text preview | Up to 5,000 lines or 100,000 characters. Copy, Raw text, Save document and Clone use the full text. |
 | Saving and cloning files | Up to 64 MiB in memory. Larger files need streaming saves (desktop Chrome or Edge). Files are never previewed or opened. |
 | Discussions | Up to 200 comments per paste; 4,000 characters of text and a 40-character name each. |
-| Expiry | 5 minutes, 1 hour, 1 day, 7 days or 30 days. Never unlimited. Expired pastes are never served and are removed within a minute. |
+| Expiry | 5 or 30 minutes; 1, 3 or 12 hours; 1 or 3 days; 7 days or 30 days. Never unlimited. Expired pastes are never served and are removed within a minute. |
 | Burn after reading | 1 to 1,000 authorized opens (default 1), counted before delivery and kept across restarts. |
 
 <details>
@@ -717,7 +717,7 @@ rate limited):
 {"expires_in": 86400, "burn_after_reading": false, "total_size": 12345}
 ```
 
-- `expires_in`: seconds; one of `300`, `3600`, `86400`, `604800`, `2592000`.
+- `expires_in`: seconds; one of `300`, `1800`, `3600`, `10800`, `43200`, `86400`, `259200`, `604800`, `2592000`.
 - `total_size`: the exact ciphertext size, from 67 bytes to the maximum.
 - `max_reads` (optional, burn only): 1 to 1000, default 1.
 - `comment_token` (optional, not with burn): 43 base64url characters;

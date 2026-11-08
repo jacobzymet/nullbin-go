@@ -315,6 +315,37 @@ func TestPasteLifecycle(t *testing.T) {
 	}
 }
 
+// Exactly these expiries are offered; nothing longer than 30 days.
+func TestAllowedExpiries(t *testing.T) {
+	want := map[int64]time.Duration{
+		300: 5 * time.Minute, 1800: 30 * time.Minute, 3600: time.Hour,
+		10800: 3 * time.Hour, 43200: 12 * time.Hour, 86400: 24 * time.Hour,
+		259200: 72 * time.Hour, 604800: 7 * 24 * time.Hour, 2592000: 30 * 24 * time.Hour,
+	}
+	if len(allowedExpiry) != len(want) {
+		t.Fatalf("%d expiries allowed, want %d", len(allowedExpiry), len(want))
+	}
+	for s, d := range want {
+		if allowedExpiry[s] != d {
+			t.Errorf("expires_in %d: got %v, want %v", s, allowedExpiry[s], d)
+		}
+	}
+	e := newEnv(t, nil)
+	e.srv.creates.burst = 1000
+	for _, s := range []int64{1800, 10800, 43200, 259200} {
+		body := fmt.Sprintf(`{"expires_in":%d,"burn_after_reading":false,"total_size":100}`, s)
+		if resp, _ := e.do(t, "POST", "/api/v1/pastes", []byte(body), map[string]string{"Content-Type": "application/json"}); resp.StatusCode != 201 {
+			t.Errorf("expires_in %d: status %d", s, resp.StatusCode)
+		}
+	}
+	for _, s := range []int64{1799, 7200, 31536000} {
+		body := fmt.Sprintf(`{"expires_in":%d,"burn_after_reading":false,"total_size":100}`, s)
+		if resp, _ := e.do(t, "POST", "/api/v1/pastes", []byte(body), map[string]string{"Content-Type": "application/json"}); resp.StatusCode != 400 {
+			t.Errorf("expires_in %d: status %d, want 400", s, resp.StatusCode)
+		}
+	}
+}
+
 func TestCreateValidation(t *testing.T) {
 	e := newEnv(t, nil)
 	e.srv.creates.burst = 1000

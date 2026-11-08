@@ -78,8 +78,12 @@ const (
 // "never".
 var allowedExpiry = map[int64]time.Duration{
 	5 * 60:            5 * time.Minute,     // 5m
+	30 * 60:           30 * time.Minute,    // 30m
 	60 * 60:           time.Hour,           // 1h
+	3 * 60 * 60:       3 * time.Hour,       // 3h
+	12 * 60 * 60:      12 * time.Hour,      // 12h
 	24 * 60 * 60:      24 * time.Hour,      // 1d
+	3 * 24 * 60 * 60:  3 * 24 * time.Hour,  // 3d
 	7 * 24 * 60 * 60:  7 * 24 * time.Hour,  // 1w
 	30 * 24 * 60 * 60: 30 * 24 * time.Hour, // 1m (30 days)
 }
@@ -340,7 +344,7 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	expires, ok := allowedExpiry[*req.ExpiresIn]
 	if !ok {
-		writeError(w, http.StatusBadRequest, "expires_in must be one of 300, 3600, 86400, 604800, 2592000")
+		writeError(w, http.StatusBadRequest, "expires_in must be one of 300, 1800, 3600, 10800, 43200, 86400, 259200, 604800, 2592000")
 		return
 	}
 	if *req.TotalSize < MinBlobSize {
