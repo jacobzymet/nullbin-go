@@ -66,7 +66,9 @@ export async function initView(id: string, fragment: string): Promise<void> {
   if (!parsed) {
     showProblem(
       'This link is incomplete',
-      'The part after # is missing or damaged. It holds the key, so the paste can’t be opened without it. Ask the sender for the full link.',
+      fragment.length <= 1
+        ? 'The key that unlocks this paste is the end of the link, after the #, and it’s missing. Nullbin removes the key from the address bar as soon as a paste opens, so reloading the page or copying the address loses it. Open the original link again, or ask the sender for it.'
+        : 'The key that unlocks this paste is the end of the link, after the #, and it’s damaged. Ask the sender for the full link.',
     );
     return;
   }

@@ -13,7 +13,9 @@ export function initDelete(id: string, fragment: string): void {
       showProblem('This delete link is from an older version', 'Delete links made before this server was updated can no longer be used here, so that a share link can never be mistaken for one. The paste still expires on its own.');
       return;
     }
-    showProblem('This delete link is incomplete', 'The part after # is missing or damaged. Use the full delete link you got when the paste was created.');
+    showProblem('This delete link is incomplete', fragment.length <= 1
+      ? 'The code that allows deleting is the end of the link, after the #, and it’s missing. Nullbin removes it from the address bar as soon as the page opens, so reloading the page or copying the address loses it. Use the full delete link you got when the paste was created.'
+      : 'The code that allows deleting is the end of the link, after the #, and it’s damaged. Use the full delete link you got when the paste was created.');
     return;
   }
   showSection('delete');

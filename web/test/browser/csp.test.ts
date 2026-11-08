@@ -295,6 +295,23 @@ test('the browser itself blocks HTML injection and isolates the page', async () 
   await h.context.close();
 });
 
+test('reloading an opened paste explains why the key is gone', async () => {
+  const { share } = await createPaste({ text: 'reload me' });
+  const h = await open();
+  await goto(h, share);
+  await h.page.waitForSelector('#view-content:not([hidden])', { timeout: 60_000 });
+  assert.equal(new URL(h.page.url()).hash, '', 'the key left the address bar');
+  await h.page.reload();
+  await h.page.waitForSelector('#problem', { state: 'visible' });
+  assert.match(await h.page.textContent('#problem-text') ?? '', /reloading the page or copying the address loses it\. Open the original link again/);
+  await h.page.goto('about:blank');
+  await goto(h, share.replace(/#.*/, '#damaged'));
+  await h.page.waitForSelector('#problem', { state: 'visible' });
+  assert.match(await h.page.textContent('#problem-text') ?? '', /after the #, and it’s damaged\. Ask the sender/);
+  await h.check();
+  await h.context.close();
+});
+
 test('every page loads under the CSP with no external requests', async () => {
   const id = '0123456789abcdef0123456789abcdef';
   const pages: [string, string, RegExp | null][] = [
