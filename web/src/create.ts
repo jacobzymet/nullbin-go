@@ -142,7 +142,7 @@ export function initCreate(draft?: { text: string; file: File | null }): void {
     updateCount();
   }
 
-  // --- Options. A discussion needs a password and cannot burn. ---
+  // --- Options. A discussion cannot burn. ---
   const setOptionHint = (input: HTMLInputElement, helpId: string, message: string) => {
     input.parentElement?.setAttribute('title', message);
     el(helpId).textContent = message;
@@ -152,8 +152,6 @@ export function initCreate(draft?: { text: string; file: File | null }): void {
   };
   burnReads.addEventListener('input', updateReadUnit);
   const sync = () => {
-    if (discussion.checked) pwSwitch.checked = true;
-    pwSwitch.disabled = discussion.checked;
     burn.disabled = discussion.checked;
     discussion.disabled = burn.checked;
     show(el('burn-reads-field'), burn.checked);
@@ -167,10 +165,8 @@ export function initCreate(draft?: { text: string; file: File | null }): void {
       : 'Deleted from the server after the configured number of authorized opens.');
     setOptionHint(discussion, 'discussion-help', burn.checked
       ? 'Disable burning to enable a discussion.'
-      : 'Allow encrypted comments. Requires a password.');
-    setOptionHint(pwSwitch, 'password-help', discussion.checked
-      ? 'A password is required while Discussion is enabled.'
-      : 'Readers need the password as well as the link. Send it separately.');
+      : 'Allow encrypted comments from everyone who can open the paste.');
+    setOptionHint(pwSwitch, 'password-help', 'Readers need the password as well as the link. Send it separately.');
     show(pwRow, pwSwitch.checked);
     password.required = pwSwitch.checked;
     if (!pwSwitch.checked) {
@@ -183,7 +179,6 @@ export function initCreate(draft?: { text: string; file: File | null }): void {
     if (pwSwitch.checked && password.value === '') password.focus();
   };
   pwSwitch.addEventListener('change', focusPasswordIfNew);
-  discussion.addEventListener('change', focusPasswordIfNew);
   password.addEventListener('input', () => {
     password.classList.remove('is-invalid');
     password.setAttribute('aria-invalid', 'false');

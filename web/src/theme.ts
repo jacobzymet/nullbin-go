@@ -1,30 +1,22 @@
-// Light/dark mode via Bootstrap's data-bs-theme attribute. Follows the
-// system setting until the user picks one with the toggle; that choice is
-// remembered in localStorage (it never leaves the browser).
+// Light/dark mode via Bootstrap's data-bs-theme attribute. The page always
+// follows the system setting, and changes with it. The toggle switches the
+// current page only: nothing is remembered, so the next page load follows
+// the system again. (The stylesheet also follows the system on its own, so
+// the first paint already matches before this script runs.)
 
 import { el, setIcon } from './dom.ts';
 
 type Theme = 'light' | 'dark';
-const STORAGE_KEY = 'nullbin-theme';
 
-function saved(): Theme | null {
-  try {
-    const v = localStorage.getItem(STORAGE_KEY);
-    return v === 'light' || v === 'dark' ? v : null;
-  } catch {
-    return null;
-  }
-}
-
-function save(t: Theme): void {
-  try {
-    localStorage.setItem(STORAGE_KEY, t);
-  } catch {
-    // Storage blocked: the choice lasts for this page only.
-  }
-}
+/** Earlier versions remembered a manual choice here. It is no longer used. */
+const LEGACY_STORAGE_KEY = 'nullbin-theme';
 
 export function initTheme(): void {
+  try {
+    localStorage.removeItem(LEGACY_STORAGE_KEY);
+  } catch {
+    // Storage blocked: there is nothing to clear.
+  }
   const media = window.matchMedia('(prefers-color-scheme: dark)');
   const button = el<HTMLButtonElement>('theme-toggle');
   const apply = (t: Theme) => {
@@ -34,13 +26,11 @@ export function initTheme(): void {
     button.title = t === 'dark' ? 'Dark theme is on' : 'Dark theme is off';
     setIcon(button, t === 'dark' ? 'sun' : 'moon');
   };
-  apply(saved() ?? (media.matches ? 'dark' : 'light'));
-  media.addEventListener('change', () => {
-    if (!saved()) apply(media.matches ? 'dark' : 'light');
-  });
+  const system = (): Theme => (media.matches ? 'dark' : 'light');
+  apply(system());
+  // A change of the system setting wins over a toggle on this page.
+  media.addEventListener('change', () => apply(system()));
   button.addEventListener('click', () => {
-    const next: Theme = document.documentElement.getAttribute('data-bs-theme') === 'dark' ? 'light' : 'dark';
-    save(next);
-    apply(next);
+    apply(document.documentElement.getAttribute('data-bs-theme') === 'dark' ? 'light' : 'dark');
   });
 }

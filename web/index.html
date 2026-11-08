@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" translate="no" data-bs-theme="light">
+<html lang="en" translate="no">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -13,7 +13,7 @@
      sees what a paste contains. The build adds the preview image when it
      knows the site's address (NULLBIN_SITE_ORIGIN). -->
 <meta name="description" content="Open this link to see the paste. Anyone you share the full link with can open it too.">
-<meta name="theme-color" content="#337ab7">
+<meta name="theme-color" content="#2f5bd3">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Nullbin">
 <meta property="og:title" content="Encrypted paste on Nullbin">
@@ -71,10 +71,27 @@
     <form id="create-form" novalidate>
       <div id="error-banner" class="nb-note nb-tone-danger" role="alert" tabindex="-1" hidden></div>
 
+      <!-- The editor comes first, so keyboard and reading order run from the
+           text to its settings and Create. Wide screens show the settings
+           above it (app.css). -->
+      <div id="composer" class="nb-composer">
+        <div class="nb-editor-heading">
+          <label for="text">Editor</label>
+          <span class="nb-meta nb-kbd"><kbd id="kbd-mod">Ctrl</kbd> + <kbd>Enter</kbd> to create</span>
+        </div>
+        <textarea id="text" class="nb-editor" rows="20" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off" placeholder="Paste text here…" aria-invalid="false"></textarea>
+        <div class="nb-composer-bar">
+          <ul id="file-list" class="nb-file-list" aria-label="Attached files" hidden></ul>
+          <span class="nb-meta nb-drop-label">Drag and drop files to attach them. Several files are sent as one zip.</span>
+          <span id="char-count" class="nb-meta ms-auto">0 characters</span>
+        </div>
+        <div class="nb-drop-hint" aria-hidden="true"><svg class="nb-i" aria-hidden="true"><use href="#i-clip"/></svg>Drop to attach</div>
+      </div>
+
       <div class="nb-toolbar" aria-label="Paste settings">
         <div class="nb-toolbar-settings">
-        <div class="nb-toolbar-field">
-          <label for="expiry">Expires:</label>
+        <div class="nb-toolbar-field nb-expiry">
+          <label for="expiry">Expires</label>
           <select id="expiry" name="expiry" class="form-select">
             <option value="300">5 minutes</option>
             <option value="3600">1 hour</option>
@@ -91,7 +108,7 @@
             <span id="burn-reads-unit">open</span>
           </div>
         </div>
-        <label class="nb-check" title="Allow encrypted comments. Requires a password."><input id="discussion" class="form-check-input" type="checkbox" aria-describedby="discussion-help">Discussion</label>
+        <label class="nb-check" title="Allow encrypted comments from everyone who can open the paste."><input id="discussion" class="form-check-input" type="checkbox" aria-describedby="discussion-help">Discussion</label>
         <div class="nb-password-setting">
         <label class="nb-check" title="Readers need the password as well as the link. Send it separately."><input id="password-switch" class="form-check-input" type="checkbox" aria-describedby="password-help" aria-controls="password-row">Password</label>
         <div id="password-row" class="nb-toolbar-password" hidden>
@@ -113,21 +130,8 @@
       <span id="burn-help" class="visually-hidden">Delete the paste after the allowed number of authorized opens. Defaults to one open.</span>
       <span id="burn-reads-help" class="visually-hidden">Allow 1 to 1,000 authorized opens before deletion. Reloads and interrupted downloads count as opens.</span>
       <span id="password-help" class="visually-hidden">Readers need the password as well as the link. Send it separately.</span>
-      <span id="discussion-help" class="visually-hidden">Readers who know the password can leave encrypted comments.</span>
+      <span id="discussion-help" class="visually-hidden">Everyone who can open the paste can read and leave encrypted comments.</span>
 
-      <div id="composer" class="nb-composer">
-        <div class="nb-editor-heading">
-          <label for="text">Editor</label>
-          <span class="nb-meta nb-kbd"><kbd id="kbd-mod">Ctrl</kbd> + <kbd>Enter</kbd> to create</span>
-        </div>
-        <textarea id="text" class="nb-editor" rows="20" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off" placeholder="Paste text here…" aria-invalid="false"></textarea>
-        <div class="nb-composer-bar">
-          <ul id="file-list" class="nb-file-list" aria-label="Attached files" hidden></ul>
-          <span class="nb-meta nb-drop-label">Drag and drop files to attach them. Several files are sent as one zip.</span>
-          <span id="char-count" class="nb-meta ms-auto">0 characters</span>
-        </div>
-        <div class="nb-drop-hint" aria-hidden="true"><svg class="nb-i" aria-hidden="true"><use href="#i-clip"/></svg>Drop to attach</div>
-      </div>
       <div id="create-progress" class="nb-progress" hidden>
         <div id="create-bar" class="progress" role="progressbar" aria-label="Upload progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
           <div id="create-bar-fill" class="progress-bar nb-w-0"></div>

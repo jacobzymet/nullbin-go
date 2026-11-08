@@ -39,7 +39,7 @@ mid-2022 on; Safari 16.4 or later). Older browsers cannot open it.
 | Option | What it does |
 |---|---|
 | **Password** | Readers need the password as well as the link. At least 8 characters. |
-| **Discussion** | Readers with the link and password can post encrypted comments. Needs a password; cannot be combined with burn after reading. |
+| **Discussion** | Everyone who can open the paste can read and post encrypted comments: with a password, only people who also know it. Cannot be combined with burn after reading. |
 | **Burn after reading** | The paste is deleted after a set number of opens (1 to 1,000; 1 by default). Every authorized open counts, including reloads and interrupted downloads; wrong passwords and link previews do not. |
 
 After opening a paste:

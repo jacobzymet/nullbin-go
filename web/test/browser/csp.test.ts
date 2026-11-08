@@ -215,7 +215,7 @@ async function createPaste(o: CreateOptions): Promise<{ share: string; del: stri
   if (o.maxReads !== undefined) await h.page.fill('#burn-reads', String(o.maxReads));
   if (o.discussion) await h.page.check('#discussion');
   if (o.password) {
-    if (!o.discussion) await h.page.check('#password-switch');
+    await h.page.check('#password-switch');
     await h.page.fill('#password', o.password);
   }
   if (o.expiry) await h.page.selectOption('#expiry', o.expiry);
@@ -616,7 +616,7 @@ test('delete link removes the paste', async () => {
   await v.context.close();
 });
 
-test('create form: a discussion requires a password and rules out burning', async () => {
+test('create form: a discussion rules out burning, and the open count is validated', async () => {
   const h = await open();
   await goto(h, `${origin}/`);
   await h.page.check('#password-switch');
@@ -625,12 +625,12 @@ test('create form: a discussion requires a password and rules out burning', asyn
   assert.equal(await h.page.locator('.nb-option-notes, .nb-option-note').count(), 0, 'settings do not add inline notices');
   await h.page.uncheck('#password-switch');
   await h.page.check('#discussion');
-  assert.ok(await h.page.isChecked('#password-switch'), 'password switched on');
-  assert.ok(await h.page.isDisabled('#password-switch'), 'password cannot be switched off');
+  assert.equal(await h.page.isChecked('#password-switch'), false, 'a discussion does not need a password');
+  assert.ok(await h.page.isEnabled('#password-switch'), 'a password stays optional');
   assert.ok(await h.page.isDisabled('#burn'), 'burn after reading unavailable');
   assert.equal(await h.page.locator('label:has(#burn)').getAttribute('title'), 'Turn off Discussion to enable burn after reading.');
-  assert.equal(await h.page.locator('label:has(#password-switch)').getAttribute('title'), 'A password is required while Discussion is enabled.');
   assert.equal(await h.page.textContent('#burn-help'), 'Turn off Discussion to enable burn after reading.');
+  await h.page.check('#password-switch');
   await h.page.fill('#text', 'x');
   await h.page.fill('#password', 'short');
   await h.page.click('#create-submit');
@@ -638,7 +638,6 @@ test('create form: a discussion requires a password and rules out burning', asyn
   assert.equal(await h.page.getAttribute('#password', 'aria-invalid'), 'true');
   assert.deepEqual(h.apiCalls, [], 'nothing is uploaded with a too-short password');
   await h.page.uncheck('#discussion');
-  assert.ok(await h.page.isEnabled('#password-switch'));
   await h.page.check('#burn');
   assert.ok(await h.page.isDisabled('#discussion'), 'no discussion on a burn paste');
   assert.ok(await h.page.isVisible('#burn-reads'));
@@ -658,9 +657,41 @@ test('create form: a discussion requires a password and rules out burning', asyn
   assert.ok(await h.page.isHidden('#burn-reads'));
   assert.ok(await h.page.isDisabled('#burn-reads'));
   assert.ok(await h.page.isEnabled('#discussion'));
-  assert.equal(await h.page.locator('label:has(#discussion)').getAttribute('title'), 'Allow encrypted comments. Requires a password.');
+  assert.equal(await h.page.locator('label:has(#discussion)').getAttribute('title'), 'Allow encrypted comments from everyone who can open the paste.');
   await h.check();
   await h.context.close();
+});
+
+test('discussion without a password: anyone with the link reads and comments, nothing is asked', async () => {
+  const { share } = await createPaste({ text: 'Open thread.', discussion: true });
+  const h = await open();
+  await goto(h, share);
+  await h.page.waitForSelector('#view-content:not([hidden])', { timeout: 60_000 });
+  assert.ok(await h.page.isHidden('#gate-password'), 'no password prompt');
+  await h.page.waitForSelector('#comments:not([hidden])');
+  await h.page.fill('#comment-name', 'Sam');
+  await h.page.fill('#comment-text', 'Hello from the link alone.');
+  await h.page.click('#comment-submit');
+  await h.page.waitForSelector('.nb-comment');
+  assert.equal(await h.page.textContent('.nb-comment .nb-comment-text'), 'Hello from the link alone.');
+  // A second reader with the same link sees the comment after decrypting it.
+  const h2 = await open();
+  await goto(h2, share);
+  await h2.page.waitForSelector('.nb-comment', { timeout: 60_000 });
+  assert.equal(await h2.page.textContent('.nb-comment .nb-comment-name'), 'Sam');
+  // Only the derived comment token reaches the server, never the link key or
+  // the comment's plaintext.
+  const key = share.split('#')[1]!;
+  for (const r of [...h.sent, ...h2.sent]) {
+    const seen = `${r.path} ${JSON.stringify(r.headers)} ${r.body ? r.body.toString('latin1') : ''}`;
+    assert.ok(!seen.includes(key), `the link key was sent in ${r.method} ${r.path}`);
+    assert.ok(!seen.includes('Hello from the link alone.'), `plaintext was sent in ${r.method} ${r.path}`);
+  }
+  assert.ok(h.sent.some((r) => /^[A-Za-z0-9_-]{43}$/.test(r.headers['nullbin-comment-token'] ?? '')), 'comments use the derived token');
+  await h.check();
+  await h2.check();
+  await h.context.close();
+  await h2.context.close();
 });
 
 test('discussion: encrypted comments and replies, readable only with the password', async () => {
@@ -767,10 +798,14 @@ test('theme toggle and copy buttons work under the CSP', async () => {
   await h.page.waitForSelector('#text-copy.nb-copied');
   assert.equal(await h.page.textContent('#text-copy span'), 'Copied');
   assert.equal(await h.page.evaluate(() => (window as Window & { __copiedText?: string }).__copiedText), 'copy test');
-  // The theme choice survives a reload.
+  // The toggle applies to this page only: a reload follows the system again.
   await h.page.reload();
   await h.page.waitForSelector('#loading', { state: 'hidden' });
-  assert.equal(await h.page.getAttribute('html', 'data-bs-theme'), 'dark');
+  assert.equal(await h.page.getAttribute('html', 'data-bs-theme'), 'light');
+  assert.equal(await h.page.evaluate(() => localStorage.getItem('nullbin-theme')), null, 'no theme choice is stored');
+  // A change of the system setting is followed while the page is open.
+  await h.page.emulateMedia({ colorScheme: 'dark' });
+  await h.page.waitForFunction(() => document.documentElement.getAttribute('data-bs-theme') === 'dark');
   await h.check();
   await h.context.close();
 });
@@ -912,7 +947,7 @@ test('settings keep logical rows across viewport sizes, option states, and input
         await checkLayout('burn limit and password');
         await h.page.uncheck('#burn');
         await h.page.check('#discussion');
-        await checkLayout('discussion and required password');
+        await checkLayout('discussion and password');
         await h.page.uncheck('#discussion');
         await h.page.uncheck('#password-switch');
       }
@@ -940,6 +975,7 @@ test('paste controls stay reachable at phone and desktop widths in both themes',
       await h.page.waitForFunction(() => document.fonts.check('30px "Damion"', 'Nullbin') && [...document.fonts].some((font) => font.family === 'Damion' && font.status === 'loaded'));
       assert.equal(await h.page.locator('.nb-brand svg, .nb-brand-description').count(), 0);
       await h.page.check('#discussion');
+      await h.page.check('#password-switch');
       assert.ok(await h.page.isVisible('#password'));
       assert.ok(await h.page.isDisabled('#burn'));
       const heights = await h.page.locator('#create-submit, #expiry, #password, #password-reveal, #attach, #theme-toggle, .nb-check').evaluateAll((controls) => controls.map((control) => control.getBoundingClientRect().height));

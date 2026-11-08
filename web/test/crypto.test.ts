@@ -290,8 +290,8 @@ test('metadata is validated strictly', () => {
   const enc = (v: unknown) => new TextEncoder().encode(JSON.stringify(v));
   const ok = { type: 'text', text: 'x', filename: null, mime: null, size: 0, discussion: false };
   const file = { type: 'file', text: '', filename: 'f', mime: null, size: 1, discussion: false };
-  assert.deepEqual(parseMeta(enc(ok), true, false), ok);
-  assert.deepEqual(parseMeta(enc({ ...ok, discussion: true }), true, true), { ...ok, discussion: true });
+  assert.deepEqual(parseMeta(enc(ok), true), ok);
+  assert.deepEqual(parseMeta(enc({ ...ok, discussion: true }), true), { ...ok, discussion: true });
   const bad: [unknown, boolean][] = [
     [ok, false], // text paste must be final
     [{ ...ok, extra: 1 }, true],
@@ -300,7 +300,6 @@ test('metadata is validated strictly', () => {
     [{ ...ok, filename: 'f' }, true],
     [{ ...ok, discussion: 'yes' }, true],
     [{ type: 'text', text: 'x', filename: null, mime: null, size: 0 }, true], // discussion missing
-    [{ ...ok, discussion: true }, true], // discussion without a password
     [file, true], // file must not be final
     [{ ...file, filename: '' }, false],
     [{ ...file, size: -1 }, false],
@@ -313,9 +312,9 @@ test('metadata is validated strictly', () => {
     [null, true],
   ];
   for (const [v, final] of bad) {
-    assert.throws(() => parseMeta(enc(v), final, false), PasteError, JSON.stringify(v));
+    assert.throws(() => parseMeta(enc(v), final), PasteError, JSON.stringify(v));
   }
-  assert.throws(() => parseMeta(new Uint8Array([0xff, 0xfe]), true, false), PasteError);
+  assert.throws(() => parseMeta(new Uint8Array([0xff, 0xfe]), true), PasteError);
 });
 
 test('empty pastes and oversized text are refused before upload', () => {
@@ -361,8 +360,19 @@ test('fragment encoding and strict parsing', () => {
   assert.equal(parseTokenFragment(`#${plain}<`), null);
 });
 
-test('a discussion requires a password', () => {
-  assert.throws(() => preparePaste(sodium, input({ discussion: true })), (e: unknown) => e instanceof PasteError && /password/.test(e.message));
+test('a discussion works without a password, with keys from the link key alone', async () => {
+  const prepared = preparePaste(sodium, input({ text: 'open talk', discussion: true }));
+  assert.match(prepared.commentToken ?? '', /^[A-Za-z0-9_-]{43}$/);
+  const parts: Uint8Array[] = [];
+  for await (const c of prepared.chunks()) parts.push(c);
+  let asked = false;
+  const opened = await openPaste(sodium, new ByteReader(streamOf(concat(parts))), prepared.fragmentKey, async () => { asked = true; return null; });
+  assert.equal(asked, false, 'no password is asked for');
+  assert.equal(opened.meta.discussion, true);
+  assert.ok(opened.discussion);
+  assert.equal(opened.discussion.token, prepared.commentToken);
+  // The token is derived, never the key itself.
+  assert.notEqual(prepared.commentToken, sodium.to_base64(prepared.fragmentKey, sodium.base64_variants.URLSAFE_NO_PADDING));
 });
 
 test('discussion paste: token and comment key come from link key + password', async () => {

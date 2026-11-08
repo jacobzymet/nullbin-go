@@ -129,16 +129,14 @@ test('the metadata parser accepts only the exact schema', () => {
     for (const k of keys) if (r.int(4) !== 0 || i % 3 === 0) fields.push(`"${k}":${values[r.int(values.length)]}`);
     const json = r.int(20) === 0 ? String.fromCharCode(...r.bytes(20)) : `{${fields.join(',')}}`;
     for (const final of [true, false]) {
-      for (const pw of [true, false]) {
-        try {
-          const m = parseMeta(enc.encode(json), final, pw);
-          assert.ok(m.type === 'text' || m.type === 'file');
-          assert.ok(Number.isSafeInteger(m.size) && m.size >= 0);
-          assert.ok(!m.discussion || pw);
-          assert.equal(Object.getPrototypeOf(m), Object.prototype);
-        } catch (e) {
-          assert.ok(e instanceof PasteError);
-        }
+      try {
+        const m = parseMeta(enc.encode(json), final);
+        assert.ok(m.type === 'text' || m.type === 'file');
+        assert.ok(Number.isSafeInteger(m.size) && m.size >= 0);
+        assert.equal(typeof m.discussion, 'boolean');
+        assert.equal(Object.getPrototypeOf(m), Object.prototype);
+      } catch (e) {
+        assert.ok(e instanceof PasteError);
       }
     }
   }

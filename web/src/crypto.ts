@@ -44,7 +44,7 @@ export interface PasteInput {
   mime: string | null;
   /** Empty string means no password. */
   password: string;
-  /** Let readers comment. Requires a password. */
+  /** Let readers comment. With a password, only readers who know it can. */
   discussion: boolean;
 }
 
@@ -119,7 +119,6 @@ export function preparePaste(sodium: Sodium, input: PasteInput): PreparedPaste {
   const hasFile = input.file !== null;
   if (!hasFile && input.text.length === 0) throw new PasteError('format', 'Add some text or attach a file first.');
   const hasPassword = input.password.length > 0;
-  if (input.discussion && !hasPassword) throw new PasteError('format', 'A discussion needs a password.');
   const filename = hasFile ? (input.filename || 'file').slice(0, MAX_FILENAME_LENGTH) : null;
   const mime = hasFile && input.mime ? input.mime.slice(0, MAX_MIME_LENGTH) : null;
   const meta: PasteMeta = {
@@ -193,7 +192,7 @@ export function preparePaste(sodium: Sodium, input: PasteInput): PreparedPaste {
 
 export interface OpenedPaste {
   meta: PasteMeta;
-  /** Set when the paste has a discussion (always password-protected). */
+  /** Set when the paste has a discussion. */
   discussion: DiscussionKeys | null;
   /**
    * Decrypted file content for file pastes, null for text-only pastes.
@@ -284,7 +283,7 @@ export async function openPaste(
   const final = res.tag === TAG_FINAL;
   let meta: PasteMeta;
   try {
-    meta = parseMeta(res.message, final, prefix.password);
+    meta = parseMeta(res.message, final);
   } catch (e) {
     sodium.memzero(master);
     throw e;

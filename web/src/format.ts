@@ -67,8 +67,8 @@ export interface PasteMeta {
   /** File size in bytes; 0 for a text-only paste. */
   size: number;
   /**
-   * Readers may comment. Only valid together with a password, and set
-   * inside the encrypted metadata so the server cannot switch it on.
+   * Readers may comment. Set inside the encrypted metadata so the server
+   * cannot switch it on.
    */
   discussion: boolean;
 }
@@ -128,7 +128,7 @@ export function blobSize(metaBytes: number, fileSize: number | null): number {
 }
 
 /** Validates decrypted metadata. Anything unexpected is rejected. */
-export function parseMeta(bytes: Uint8Array, final: boolean, hasPassword: boolean): PasteMeta {
+export function parseMeta(bytes: Uint8Array, final: boolean): PasteMeta {
   let v: unknown;
   try {
     v = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
@@ -143,7 +143,7 @@ export function parseMeta(bytes: Uint8Array, final: boolean, hasPassword: boolea
   const { type, text, filename, mime, size, discussion } = o;
   if (typeof text !== 'string') throw bad();
   if (typeof size !== 'number' || !Number.isSafeInteger(size) || size < 0) throw bad();
-  if (typeof discussion !== 'boolean' || (discussion && !hasPassword)) throw bad();
+  if (typeof discussion !== 'boolean') throw bad();
   if (type === 'text') {
     if (!final || filename !== null || mime !== null || size !== 0) throw bad();
     return { type, text, filename: null, mime: null, size: 0, discussion };
