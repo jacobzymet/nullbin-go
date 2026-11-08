@@ -459,6 +459,11 @@ input.form-control, select.form-select { height: var(--nb-control-height); }
   .nb-toast-wrap { right: 12px; bottom: 12px; left: 12px; }
   .nb-toast { margin-left: auto; max-width: 100%; }
 }
+/* On the narrowest phones, wide system fonts (DejaVu, Cantarell, Verdana)
+   would push "Save document" past its button. */
+@media (max-width: 359.98px) {
+  .nb-paste-actions > .btn { font-size: 15px; }
+}
 /* Touch screens cannot drag files onto the editor. */
 @media (hover: none) and (pointer: coarse) {
   .nb-drop-label, .nb-kbd { display: none; }
