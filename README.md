@@ -86,8 +86,8 @@ macOS.
    ```
 
    This is the development version, which is fine for trying it out. For
-   the latest release, also run `git checkout v1.2.3` with the version from
-   the [Releases page](https://github.com/jacobzymet/nullbin-go/releases).
+   the latest release, also run `git checkout --detach refs/tags/v1.2.3`
+   with the version from the [Releases page](https://github.com/jacobzymet/nullbin-go/releases).
 
 2. Build it. The first build takes a few minutes:
 
@@ -155,7 +155,8 @@ sudo apt-get update
 sudo apt-get install -y docker.io docker-compose-v2 git curl
 VERSION=$(curl -fsSL https://api.github.com/repos/jacobzymet/nullbin-go/releases/latest | grep -o '"tag_name": *"[^"]*"' | head -n 1 | cut -d '"' -f 4)
 echo "Installing $VERSION"
-git clone --branch "$VERSION" https://github.com/jacobzymet/nullbin-go.git nullbin
+git clone --no-checkout https://github.com/jacobzymet/nullbin-go.git nullbin &&
+git -C nullbin checkout --detach "refs/tags/$VERSION" &&
 cd nullbin/deploy
 ```
 
@@ -203,7 +204,8 @@ sudo apt-get update
 sudo apt-get install -y docker.io docker-compose-v2 git curl
 VERSION=$(curl -fsSL https://api.github.com/repos/jacobzymet/nullbin-go/releases/latest | grep -o '"tag_name": *"[^"]*"' | head -n 1 | cut -d '"' -f 4)
 echo "Installing $VERSION"
-git clone --branch "$VERSION" https://github.com/jacobzymet/nullbin-go.git nullbin
+git clone --no-checkout https://github.com/jacobzymet/nullbin-go.git nullbin &&
+git -C nullbin checkout --detach "refs/tags/$VERSION" &&
 cd nullbin/deploy
 ```
 
@@ -226,7 +228,8 @@ and your version. The API's home page showing "Not found" is expected.
 down:
 
 ```sh
-git clone --branch v1.2.3 https://github.com/jacobzymet/nullbin-go.git nullbin
+git clone --no-checkout https://github.com/jacobzymet/nullbin-go.git nullbin
+git -C nullbin checkout --detach refs/tags/v1.2.3
 cd nullbin
 ```
 
@@ -330,7 +333,8 @@ None of these delete pastes, except `delete` for the one paste you name.
 **Option B:** after updating the server, build the website from the same
 version and upload it again (steps 2 and 3 of
 [Option B](#option-b-separate-hosting)). In your existing copy on your
-computer, switch versions with `git fetch --tags` and `git checkout v1.2.3`.
+computer, switch versions with `git fetch --tags` and
+`git checkout --detach refs/tags/v1.2.3`.
 Always update the server first.
 
 `update` installs only versions published on the Releases page from the
@@ -468,6 +472,11 @@ addresses are refused rather than trusted.
    [SSL Labs server test](https://www.ssllabs.com/ssltest/) and
    [Mozilla HTTP Observatory](https://developer.mozilla.org/en-US/observatory).
    Both should give top grades; look into any warning.
+
+The API's request and bandwidth limits cover encrypted transfers. Website
+files are served separately by Caddy (Option A) or your static host (Option
+B), so any additional limits for that traffic belong at the proxy, CDN or
+hosting provider.
 
 ### What the server knows
 

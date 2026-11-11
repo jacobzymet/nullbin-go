@@ -46,8 +46,51 @@ function png(b: Uint8Array): ImageInfo | null {
 }
 
 function gif(b: Uint8Array): ImageInfo | null {
-  if (b.length < 10 || !(ascii(b, 0, 'GIF87a') || ascii(b, 0, 'GIF89a'))) return null;
-  return { type: 'image/gif', width: le16(b, 6), height: le16(b, 8) };
+  if (b.length < 13 || !(ascii(b, 0, 'GIF87a') || ascii(b, 0, 'GIF89a'))) return null;
+  const width = le16(b, 6), height = le16(b, 8);
+  if (!width || !height || width > MAX_PREVIEW_SIDE || height > MAX_PREVIEW_SIDE || width * height > MAX_PREVIEW_PIXELS) return null;
+  let i = 13;
+  if (b[10]! & 0x80) i += 3 * (2 << (b[10]! & 7)); // global color table
+  let frames = 0;
+  // GIF extensions and compressed image data are length-prefixed blocks,
+  // ending in a zero byte. Skip them without decoding any pixels.
+  const skipBlocks = (): boolean => {
+    while (i < b.length) {
+      const size = b[i++]!;
+      if (size === 0) return true;
+      if (size > b.length - i) return false;
+      i += size;
+    }
+    return false;
+  };
+  while (i < b.length) {
+    const marker = b[i++]!;
+    if (marker === 0x3b) {
+      return frames > 0 && i === b.length ? { type: 'image/gif', width, height } : null;
+    }
+    if (marker === 0x21) {
+      if (i >= b.length) return null;
+      i++; // extension label
+      if (!skipBlocks()) return null;
+      continue;
+    }
+    if (marker !== 0x2c || b.length - i < 9) return null;
+    const x = le16(b, i), y = le16(b, i + 2);
+    const w = le16(b, i + 4), h = le16(b, i + 6);
+    // Browsers may enlarge a GIF to fit its first frame, even if its
+    // logical screen claims to be tiny. Check every frame and its offset.
+    if (!w || !h || x + w > width || y + h > height) return null;
+    // Animated frames may each need a full compositing canvas. Bound their
+    // aggregate pixel budget as well as any individual frame's dimensions.
+    if (++frames > Math.floor(MAX_PREVIEW_PIXELS / (width * height))) return null;
+    const packed = b[i + 8]!;
+    i += 9;
+    if (packed & 0x80) i += 3 * (2 << (packed & 7)); // local color table
+    if (i >= b.length || b[i]! < 2 || b[i]! > 8) return null; // LZW minimum code size
+    i++;
+    if (i >= b.length || b[i] === 0 || !skipBlocks()) return null;
+  }
+  return null; // missing trailer or a truncated color table/block
 }
 
 function jpeg(b: Uint8Array): ImageInfo | null {
@@ -99,6 +142,7 @@ function webp(b: Uint8Array): ImageInfo | null {
  * or too many pixels.
  */
 export function previewInfo(bytes: Uint8Array): ImageInfo | null {
+  if (bytes.length > MAX_PREVIEW_BYTES) return null;
   const info = png(bytes) ?? jpeg(bytes) ?? gif(bytes) ?? webp(bytes);
   if (!info) return null;
   const { width, height } = info;
