@@ -1,6 +1,6 @@
 name: Release
 
-# Runs only for version tags pushed by maintainers (forks cannot trigger it).
+# Runs for version tags or a manual release requested by a maintainer.
 #
 # A release is the tagged source plus SHA256SUMS: the checksums a
 # reproducible build of that tag produces. Nothing prebuilt is published;
@@ -9,7 +9,7 @@ name: Release
 #
 # Two jobs keep privileges apart:
 #   build   - read-only; checks the tag, builds twice and computes checksums
-#   release - can only create the GitHub release; runs no project code
+#   release - creates the release tag and GitHub release; runs no project code
 #
 # Only a commit on main that already passed CI can be released. The install
 # commands look up the latest GitHub release, so servers see a new version
@@ -17,16 +17,22 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Version tag (vX.Y.Z)"
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
 env:
-  TAG: ${{ github.ref_name }}
+  TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
   build:
@@ -88,12 +94,17 @@ jobs:
     needs: build
     runs-on: ubuntu-24.04
     permissions:
-      contents: write # create the GitHub release
+      contents: write # create the release tag and GitHub release
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
       SUMS: ${{ needs.build.outputs.sums }}
     steps:
+      - name: Create tag for a manual release
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          gh api --method POST "repos/${GH_REPO}/git/refs" \
+            -f "ref=refs/tags/${TAG}" -f "sha=${GITHUB_SHA}"
       - name: Create GitHub release
         run: |
           printf '%s\n' "$SUMS" > SHA256SUMS
