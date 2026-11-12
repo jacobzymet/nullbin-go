@@ -45,9 +45,9 @@ import /etc/caddy/nullbin/cloudflare-{$CLOUDFLARE:false}.caddy
 }
 
 {$DOMAIN} {
-	request_body {
-		max_size 9MB
-	}
+	# No request_body limit: the Nullbin API caps every request body
+	# itself, and request_body in Caddy builds made with Go before 1.27.4
+	# lets an oversized body crash Caddy (CVE-2026-97054).
 	# Security headers for every response, including those Caddy makes
 	# itself: not found, request too large, the API unreachable, and the
 	# Cloudflare-only refusal.

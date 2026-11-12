@@ -54,9 +54,9 @@ import /etc/caddy/nullbin/cloudflare-{$CLOUDFLARE:false}.caddy
 	# API responses cannot become executable pages on the frontend origin,
 	# even if the API process is compromised. Only /api/v1/ reaches it.
 	handle /api/v1/* {
-		request_body {
-			max_size 9MB
-		}
+		# No request_body limit: the Nullbin API caps every request body
+		# itself, and request_body in Caddy builds made with Go before 1.27.4
+		# lets an oversized body crash Caddy (CVE-2026-97054).
 		reverse_proxy 172.30.53.20:8080 {
 			# Exactly one address: the visitor's, as Caddy determined it. Nullbin
 			# trusts this header only from Caddy, so nothing a client or another
