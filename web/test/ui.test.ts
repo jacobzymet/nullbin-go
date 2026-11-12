@@ -54,6 +54,79 @@ test('cloning rejects truncation, excess bytes, authentication failure, and conc
   assert.equal(source.canClone, false, 'abandoned streams never publish a file');
 });
 
+test('verified attachments stay in wipeable memory until a file is asked for', async () => {
+  const chunks: Uint8Array[] = [];
+  const source = new CloneableAttachment((async function* () {
+    for (const n of [3, 4]) { const b = new Uint8Array(n).fill(9); chunks.push(b); yield b; }
+  })(), 'f', 7, '');
+  await source.verify();
+  assert.equal(source.canClone, true);
+  const saved: number[] = [];
+  for await (const chunk of source.stream()) saved.push(...chunk);
+  assert.deepEqual(saved, [9, 9, 9, 9, 9, 9, 9], 'the verified bytes are served again');
+  source.wipe();
+  assert.ok(chunks.every((c) => c.every((b) => b === 0)), 'wipe() zeroes the verified bytes');
+  assert.equal(source.canClone, false);
+  await assert.rejects(source.clone(), /already being read|could not be verified/);
+
+  // Wiping before anything was read (leaving the page early) stops all reading.
+  let read = false;
+  const early = new CloneableAttachment((async function* () { read = true; yield new Uint8Array(1); })(), 'f', 1, '');
+  early.wipe();
+  assert.equal(early.canClone, false);
+  await assert.rejects(early.clone(), /already being read|could not be verified/);
+  assert.equal(read, false, 'a wiped attachment is never read');
+
+  // Wiping while the first read verifies the stream: it must not publish.
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const racing = new CloneableAttachment((async function* () {
+    yield new Uint8Array(2).fill(5);
+    await gate;
+    yield new Uint8Array(2).fill(6);
+  })(), 'f', 4, '');
+  const verifying = racing.verify();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  racing.wipe();
+  release();
+  await assert.rejects(verifying, /cleared/);
+  assert.equal(racing.canClone, false);
+  await assert.rejects(racing.clone(), /already being read|could not be verified/);
+
+  // Wiping after the last byte, while the stream is still being checked to
+  // its end (padding, final tag): it must not publish either.
+  let finish!: () => void;
+  const ending = new Promise<void>((resolve) => { finish = resolve; });
+  const late = new CloneableAttachment((async function* () {
+    yield new Uint8Array(4).fill(5);
+    await ending;
+  })(), 'f', 4, '');
+  const checking = late.verify();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  late.wipe();
+  finish();
+  await assert.rejects(checking, /cleared/);
+  assert.equal(late.canClone, false);
+
+  // Wiping during a read of the verified copy: the read fails instead of
+  // ending early, and bytes already handed out are copies wipe() cannot zero.
+  const saving = new CloneableAttachment(pieces([3, 4]), 'f', 7, '');
+  await saving.verify();
+  const reading = saving.stream();
+  const first = (await reading.next()).value as Uint8Array;
+  saving.wipe();
+  assert.deepEqual([...first], [0, 1, 2], 'a chunk already handed out is unchanged');
+  await assert.rejects(reading.next(), /cleared/);
+
+  // A stream that fails verification leaves nothing readable behind.
+  const kept: Uint8Array[] = [];
+  const bad = new CloneableAttachment((async function* () {
+    const b = new Uint8Array(3).fill(7); kept.push(b); yield b; throw Error('invalid final tag');
+  })(), 'bad', 3, '');
+  await assert.rejects(bad.verify());
+  assert.ok(kept.every((c) => c.every((b) => b === 0)), 'unverified bytes are zeroed');
+});
+
 test('email sharing includes the complete secret link without injectable headers', () => {
   const link = `https://paste.example/p/${'a'.repeat(32)}#${'B'.repeat(43)}.b`;
   const href = new URL(emailHref(link));

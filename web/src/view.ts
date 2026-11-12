@@ -71,11 +71,12 @@ async function open(id: string, key: Uint8Array, burn: boolean, shareURL: string
   reveal(el('view-progress'));
   stage.textContent = 'Downloading';
   progress.set(0, '');
-  let opened: OpenedPaste;
+  let opened: OpenedPaste | undefined;
   let asked = false;
   let reader: ByteReader | null = null;
   let password: string | null = null;
   let readsRemaining = 0;
+  let file: CloneableAttachment | null = null;
   try {
     let download;
     if (burn) {
@@ -110,13 +111,30 @@ async function open(id: string, key: Uint8Array, burn: boolean, shareURL: string
     reader = new ByteReader(body, (received) => {
       if (size > 0) progress.set(received / size, `${formatBytes(received)} of ${formatBytes(size)}`);
     });
-    window.addEventListener('pagehide', () => { void reader?.cancel(); }, { once: true });
+    window.addEventListener('pagehide', () => { void reader?.cancel(); file?.wipe(); }, { once: true });
     opened = await openPaste(sodium, reader, key, (attempt) => {
       if (password !== null && attempt === 0) return Promise.resolve(password);
       asked = true;
       return askPassword(attempt);
     });
+    if (opened.file) {
+      const { meta } = opened;
+      file = new CloneableAttachment(opened.file, safeFilename(meta.filename), meta.size, meta.mime ?? '');
+      // When the paste fits in memory, download and verify all of it before
+      // showing anything. Otherwise the download would pause after the text
+      // until the reader saves the file, which would tell the server that a
+      // file is attached and roughly how long the text is. The choice uses
+      // the size implied by the authenticated metadata (what the server
+      // stores anyway), never a header the server could change.
+      if (opened.blobSize <= MAX_BUFFERED_DOWNLOAD) {
+        stage.textContent = 'Downloading';
+        reveal(el('view-progress'));
+        await file.verify();
+      }
+    }
   } catch (e) {
+    if (opened?.discussion) sodium.memzero(opened.discussion.key);
+    file?.wipe();
     await reader?.cancel();
     showFailure(e);
     return;
@@ -141,7 +159,7 @@ async function open(id: string, key: Uint8Array, burn: boolean, shareURL: string
   show(el('burned-note'), burn && readsRemaining === 0);
 
   if (meta.text.length > 0 || !opened.file) renderText(meta.text);
-  const attachment = opened.file ? renderFile(opened.file, meta.filename, meta.size, meta.mime, () => reader!.cancel()) : null;
+  const attachment = file ? renderFile(file, meta.filename, meta.size, meta.mime, () => reader!.cancel()) : null;
   initReaderActions(meta.text, shareURL, !burn || readsRemaining > 0, attachment);
   reveal(el('view-content'));
   el('view-title').focus();
@@ -185,7 +203,7 @@ function renderText(text: string): void {
   reveal(el('view-text-card'));
 }
 
-function renderFile(file: AsyncGenerator<Uint8Array>, filename: string | null, size: number, mime: string | null, cancel: () => Promise<void>): CloneAttachment {
+function renderFile(attachment: CloneableAttachment, filename: string | null, size: number, mime: string | null, cancel: () => Promise<void>): CloneAttachment {
   // Show the name that will be saved, so bidi controls cannot disguise it.
   el('view-filename').textContent = safeFilename(filename);
   el('view-filesize').textContent = formatBytes(size);
@@ -193,7 +211,6 @@ function renderFile(file: AsyncGenerator<Uint8Array>, filename: string | null, s
   const save = el<HTMLButtonElement>('save-file');
   show(el('file-save-note'), typeof (window as Window & SaveFilePickerWindow).showSaveFilePicker === 'function');
   const clone = el<HTMLButtonElement>('view-clone');
-  const attachment = new CloneableAttachment(file, safeFilename(filename), size, mime ?? '');
   let savedFile: File | null = null;
   const imageShow = el<HTMLButtonElement>('image-show');
   // Called directly from the click so the browser allows the save dialog.

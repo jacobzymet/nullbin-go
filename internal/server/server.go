@@ -26,7 +26,9 @@ const (
 	// DefaultMaxSize is the default paste size limit.
 	DefaultMaxSize = 100 << 20
 	// MinBlobSize is the smallest possible valid blob: 46-byte header plus
-	// one frame (4-byte length and 17-byte authentication overhead).
+	// one frame (4-byte length and 17-byte authentication overhead). Padded
+	// (format version 2) blobs are at least 16451 bytes, but the server does
+	// not parse the format, so it accepts any size from here.
 	MinBlobSize = 46 + 4 + 17
 
 	maxCreateBody = 1 << 10               // bounded create JSON, including tokens and max_reads

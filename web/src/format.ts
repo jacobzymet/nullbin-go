@@ -82,9 +82,10 @@ function bitLength(n: number): number {
  * MIN_PADDED_LENGTH, and above that the Padmé function (Nikitin et al.,
  * "Reducing Metadata Leakage from Encrypted Files and Communication with
  * PURBs", 2019). Padmé rounds n up so that only its top
- * floor(log2(floor(log2 n))) + 1 bits can be non-zero. That leaves about
- * log2(log2 n) bits of size information, and adds less than 6.25% for
- * streams up to 64 KiB, 3.125% up to 4 GiB and 1.5625% beyond.
+ * floor(log2(floor(log2 n))) + 2 bits can be non-zero. That leaves
+ * O(log log n) bits of size information (371 possible lengths up to
+ * 100 MiB), and adds less than 6.25% for streams up to 64 KiB, 3.125% up to
+ * 4 GiB and 1.5625% beyond (before the 21 bytes of framing per 64 KiB).
  */
 export function paddedLength(n: number): number {
   if (!Number.isSafeInteger(n) || n < 0 || n > MAX_STREAM_LENGTH) throw new RangeError('bad stream length');

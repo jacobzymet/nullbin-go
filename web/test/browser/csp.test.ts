@@ -709,17 +709,19 @@ test('tampered attachment data never reaches the text preview', async (t) => {
   await restartAPI();
   t.after(() => restartAPI());
   // Five encrypted frames; only the last is altered, so the first four would
-  // decrypt fine. Nothing may be shown until the whole attachment verifies.
+  // decrypt fine. Nothing may be shown until the whole attachment verifies:
+  // a paste of up to 64 MiB is verified completely before anything appears.
   const { share } = await createPaste({ file: { name: 'data.txt', mimeType: 'text/plain', buffer: Buffer.from('verified line\n'.repeat(22_000)) } });
   const h = await open();
   await h.page.route('**/api/v1/pastes/*', async (route) => {
     const response = await route.fetch(); const body = await response.body(); body[body.length - 1]! ^= 1;
     await route.fulfill({ response, body });
   });
-  await goto(h, share); await h.page.waitForSelector('#view-file-card:not([hidden])');
-  await h.page.click('#image-show'); await h.page.waitForSelector('#image-note:not([hidden])');
+  await goto(h, share); await h.page.waitForSelector('#problem', { state: 'visible' });
+  assert.equal(await h.page.textContent('#problem-title'), 'This paste is damaged');
+  assert.equal(await h.page.isVisible('#view-content'), false);
+  assert.equal(await h.page.isVisible('#view-file-card'), false);
   assert.equal(await h.page.textContent('#document-preview'), '');
-  assert.match(await h.page.textContent('#image-note') ?? '', /Nothing was shown/);
   await h.check(); await h.context.close();
 });
 

@@ -482,9 +482,10 @@ hosting provider.
 
 The server stores only encrypted pastes and what it needs to serve them:
 size, creation and expiry times, burn and discussion settings, and hashes of
-access tokens. The size is padded before encryption: every paste up to
-16 KiB is the same size, and larger ones are rounded up, so the size shows
-only a rough range. It does not log IP addresses, paste IDs or tokens, and keeps
+access tokens. The size is padded before encryption: every paste whose
+encoded content fits in 16 KiB (a little less than 16 KiB of text) is the
+same size, and larger ones are rounded up, so the size shows only a rough
+range. It does not log IP addresses, paste IDs or tokens, and keeps
 nothing linking a paste to who uploaded it. So you cannot read a reported
 paste, and you have no uploader details to hand over. Expired and deleted
 pastes are removed from disk within a minute, but backups and disk
@@ -591,7 +592,7 @@ Binary units are powers of 1,024. Text limits count JavaScript UTF-16 units.
 
 | Item | Limit |
 |---|---|
-| Paste size | 100 MiB by default; configurable from 64 KiB to 2 GiB, including encryption overhead and size padding (under 6.25%, and under 3.2% above 64 KiB). |
+| Paste size | 100 MiB by default; configurable from 64 KiB to 2 GiB, including encryption overhead and size padding. Every paste takes at least about 16 KiB; above that the two add at most 6.7%, and 3.3% above 64 KiB, so with the default limit the largest attachment is about 98 MiB. |
 | Text and metadata | The encrypted metadata, including the text, filename and type, must fit in 16 MiB. |
 | Attachments | Up to 100 files per paste, with optional text. Several files become one uncompressed zip archive in the sender's browser before encryption: names are stripped of folders, drive letters, control and direction characters and leading dots, and made unique; entries carry no real dates and are never executable. Filename and type up to 255 characters each. |
 | Text preview | Up to 5,000 lines or 100,000 characters. Copy, Raw text, Save document and Clone use the full text. |
@@ -645,13 +646,22 @@ Together the frames carry one padded stream:
 The JSON has exactly `type`, `text`, `filename`, `mime`, `size` and
 `discussion`. For `n` bytes of length, JSON and file, the stream is
 `padded(n)` bytes long: 16 KiB for anything up to 16 KiB, and above that
-the [Padmé](https://arxiv.org/abs/1806.03160) function, which keeps only the top `floor(log2(floor(log2 n))) + 1` bits
-of `n` (rounding up). Every frame but the last holds exactly 64 KiB of the
-stream; the last holds the rest and carries `TAG_FINAL`. The total size is
-46 bytes, plus the padded length, plus 21 bytes per frame, so it depends
-only on the padded length: text and file pastes of the same padded length
-look alike. Readers reject any other padded length, non-zero padding,
-short or empty frames, trailing bytes and incomplete streams.
+the [Padmé](https://arxiv.org/abs/1806.03160) function, which rounds `n`
+up so that only its top `floor(log2(floor(log2 n))) + 2` bits can be
+non-zero. That leaves O(log log n) bits of size information: there are 371
+possible padded lengths up to 100 MiB, about 8.5 bits. Every frame but the
+last holds exactly 64 KiB of the stream; the last holds the rest and
+carries `TAG_FINAL`. The total size is 46 bytes, plus the padded length,
+plus 21 bytes per frame, so it depends only on the padded length: text and
+file pastes of the same padded length have the same size and layout.
+Readers reject any other padded length, non-zero padding, short or empty
+frames, trailing bytes and incomplete streams. The viewer downloads and
+verifies a paste of up to 64 MiB completely before showing it, so the
+download looks the same whether or not a file is attached and whether or
+not it is saved. It decides by the size implied by the authenticated
+metadata, never by a header the server sends. A larger paste (always one
+with a file) is read as the file is saved, so the server can see when the
+reader stops after the text.
 
 **Encrypted paste, version 1** (read only, so links from older versions
 keep working until they expire): the same header with version `1`. The

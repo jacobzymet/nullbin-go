@@ -666,6 +666,118 @@ test('the metadata length and file size must fit the padded stream', async () =>
   }
 });
 
+test('an oversized first frame is refused before any password prompt', async () => {
+  const prefix = buildPrefix(true, new Uint8Array(16).fill(7));
+  const len = CHUNK_SIZE + ABYTES + 1;
+  const blob = concat([prefix, new Uint8Array(24), encodeFrameLength(len), new Uint8Array(len)]);
+  let asked = false;
+  await rejectsWith(
+    openPaste(sodium, new ByteReader(streamOf(blob)), sodium.randombytes_buf(32), async () => { asked = true; return null; }),
+    ['format'],
+  );
+  assert.equal(asked, false);
+});
+
+test('a short first frame is rejected even when the rest adds up', async () => {
+  const s = v2Stream(textMeta('hi'));
+  const { blob, key } = sealFrames(split(s, [100, s.length - 100]), 2);
+  await rejectsWith(decrypt(blob, key), ['format']);
+});
+
+test('metadata over the 16 MiB limit is rejected, even when well formed', async () => {
+  const s = v2Stream(textMeta('hi'));
+  s.set([0xff, 0xff, 0xff, 0xff], 0);
+  const huge = sealFrames(split(s), 2);
+  await rejectsWith(decrypt(huge.blob, huge.key), ['format'], 'length 0xffffffff');
+
+  // Valid JSON one byte over the limit, correctly padded: only the cap stops it.
+  const text = 'x'.repeat(MAX_META_BYTES + 1 - jsonBytes(textMeta('')).length);
+  assert.equal(jsonBytes(textMeta(text)).length, MAX_META_BYTES + 1);
+  const over = sealFrames(split(v2Stream(textMeta(text))), 2);
+  await rejectsWith(decrypt(over.blob, over.key), ['format'], 'one byte over');
+});
+
+test('surplus padding frames are rejected as soon as they exceed the padded length', async () => {
+  const frame = FRAME_LENGTH_BYTES + CHUNK_SIZE + ABYTES;
+  // Text paste: caught right after the metadata.
+  const t = v2Stream(textMeta('hi'), undefined, MIN_PADDED_LENGTH + 20 * CHUNK_SIZE);
+  const text = sealFrames(split(t), 2);
+  const r1 = new ByteReader(streamOf(text.blob, 1024));
+  await rejectsWith(openPaste(sodium, r1, text.key, async () => null), ['format']);
+  assert.ok(r1.received <= HEADER_BYTES + 2 * frame, `text: read ${r1.received} of ${text.blob.length} bytes`);
+
+  // File paste: caught by the first frame past the padded length.
+  const content = bytes(200_000);
+  const padded = paddedLength(META_LENGTH_BYTES + jsonBytes(fileMeta(content.length)).length + content.length);
+  const f = v2Stream(fileMeta(content.length), content, padded + 20 * CHUNK_SIZE);
+  const file = sealFrames(split(f), 2);
+  const r2 = new ByteReader(streamOf(file.blob, 1024));
+  await rejectsWith((async () => {
+    const opened = await openPaste(sodium, r2, file.key, async () => null);
+    for await (const _ of opened.file!) { /* drain */ }
+  })(), ['format']);
+  assert.ok(r2.received <= blobSize(padded) + 2 * frame, `file: read ${r2.received} of ${file.blob.length} bytes`);
+});
+
+test('a file paste with text spanning several frames round trips', async () => {
+  for (const textLength of [CHUNK_SIZE - 50, 3 * CHUNK_SIZE + 11]) {
+    const text = 'z'.repeat(textLength);
+    const content = bytes(1000, textLength);
+    const { blob, key } = await encrypt(input({ text, file: new Blob([content]), filename: 'f.bin' }));
+    const out = await decrypt(blob, key);
+    assert.equal(out.meta.text, text);
+    assert.ok(out.file && Buffer.from(out.file).equals(Buffer.from(content)));
+  }
+});
+
+test('openPaste reports the exact blob size from the authenticated metadata', async () => {
+  for (const inp of [
+    input({ text: 'short' }),
+    input({ text: 'x'.repeat(70_000) }),
+    input({ text: 't', file: new Blob([bytes(0)]), filename: 'e' }),
+    input({ text: '', file: new Blob([bytes(3 * CHUNK_SIZE + 5)]), filename: 'f' }),
+  ]) {
+    const { blob, key } = await encrypt(inp);
+    const opened = await openPaste(sodium, new ByteReader(streamOf(blob)), key, async () => null);
+    assert.equal(opened.blobSize, blob.length);
+    if (opened.file) for await (const _ of opened.file) { /* drain */ }
+  }
+  for (const [meta, file] of [[textMeta('old'), null], [fileMeta(0), new Uint8Array(0)], [fileMeta(CHUNK_SIZE + 1), bytes(CHUNK_SIZE + 1)]] as const) {
+    const { blob, key } = sealV1(meta, file);
+    const opened = await openPaste(sodium, new ByteReader(streamOf(blob)), key, async () => null);
+    assert.equal(opened.blobSize, blob.length, 'version 1');
+    if (opened.file) for await (const _ of opened.file) { /* drain */ }
+  }
+});
+
+test('a file paste whose stream ends early fails before openPaste returns', async () => {
+  const m = jsonBytes(fileMeta(1_000_000)).length;
+  const s = v2Stream(fileMeta(1_000_000), bytes(100), paddedLength(META_LENGTH_BYTES + m + 100));
+  const { blob, key } = sealFrames(split(s), 2);
+  await rejectsWith(openPaste(sodium, new ByteReader(streamOf(blob)), key, async () => null), ['format']);
+});
+
+test('the comment key is wiped when a text paste fails its final checks', async () => {
+  for (const version of [1, 2]) {
+    const meta = { ...textMeta('talk'), discussion: true };
+    const { blob, key } = version === 2 ? sealFrames(split(v2Stream(meta)), 2) : sealV1(meta, null);
+    const commentKey = discussionKeysFor(key);
+    const zeroed: Uint8Array[] = [];
+    const memzero = sodium.memzero;
+    sodium.memzero = (b: Uint8Array) => { zeroed.push(b.slice()); memzero(b); };
+    try {
+      await rejectsWith(decrypt(concat([blob, new Uint8Array(1)]), key), ['tampered'], `version ${version}`);
+    } finally {
+      sodium.memzero = memzero;
+    }
+    assert.ok(zeroed.some((b) => Buffer.from(b).equals(Buffer.from(commentKey))), `version ${version}: comment key not wiped`);
+  }
+});
+
+function discussionKeysFor(fragmentKey: Uint8Array): Uint8Array {
+  return sodium.crypto_kdf_derive_from_key(32, 1, 'nbcmtenc', fragmentKey);
+}
+
 test('the format version is authenticated: it cannot be switched', async () => {
   const v2 = await encrypt(input({ text: 'two' }));
   const t2 = v2.blob.slice();

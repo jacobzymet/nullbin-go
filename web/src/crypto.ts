@@ -239,6 +239,11 @@ export interface OpenedPaste {
    * file, create a download) before it finishes.
    */
   file: AsyncGenerator<Uint8Array, void, undefined> | null;
+  /**
+   * The exact blob size implied by the authenticated metadata: what the
+   * server stores, but not taken from anything the server says.
+   */
+  blobSize: number;
 }
 
 /**
@@ -396,8 +401,13 @@ async function openPadded(sodium: Sodium, src: ByteReader, state: PullState, fir
   sodium.memzero(master);
 
   if (meta.type === 'text') {
-    await finish();
-    return { meta, discussion, file: null };
+    try {
+      await finish();
+    } catch (e) {
+      if (discussion) sodium.memzero(discussion.key);
+      throw e;
+    }
+    return { meta, discussion, file: null, blobSize: blobSize(expected) };
   }
   async function* file(): AsyncGenerator<Uint8Array, void, undefined> {
     for (let left = meta.size; left > 0; ) {
@@ -410,7 +420,7 @@ async function openPadded(sodium: Sodium, src: ByteReader, state: PullState, fir
     }
     await finish();
   }
-  return { meta, discussion, file: file() };
+  return { meta, discussion, file: file(), blobSize: blobSize(expected) };
 }
 
 /** Format version 1 (unpadded), read only. The caller zeroes master. */
@@ -424,9 +434,16 @@ async function openUnpadded(sodium: Sodium, src: ByteReader, state: PullState, f
   if ((meta.type === 'text') !== final) throw new PasteError('format', 'Malformed paste metadata.');
   const discussion = meta.discussion ? discussionKeys(sodium, master) : null;
   sodium.memzero(master);
+  // Header, metadata frame, then file frames (one empty frame for an empty file).
+  const frame = FRAME_LENGTH_BYTES + ABYTES;
+  const fileFrames = final ? 0 : Math.max(1, Math.ceil(meta.size / CHUNK_SIZE));
+  const size = PREFIX_BYTES + STREAM_HEADER_BYTES + frame + first.message.length + fileFrames * frame + meta.size;
   if (final) {
-    if (!(await src.atEnd())) throw trailing();
-    return { meta, discussion, file: null };
+    if (!(await src.atEnd())) {
+      if (discussion) sodium.memzero(discussion.key);
+      throw trailing();
+    }
+    return { meta, discussion, file: null, blobSize: size };
   }
 
   async function* file(): AsyncGenerator<Uint8Array, void, undefined> {
@@ -452,5 +469,5 @@ async function openUnpadded(sodium: Sodium, src: ByteReader, state: PullState, f
       return;
     }
   }
-  return { meta, discussion, file: file() };
+  return { meta, discussion, file: file(), blobSize: size };
 }
