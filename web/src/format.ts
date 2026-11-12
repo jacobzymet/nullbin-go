@@ -1,25 +1,41 @@
-// Nullbin blob format (version 1).
+// Nullbin blob format. New pastes use version 2; version 1 is still read so
+// links shared before version 2 keep working until they expire.
 //
 //   offset  size  field
 //   0       4     magic "NBN1"
-//   4       1     version (1)
+//   4       1     version (1 or 2)
 //   5       1     flags (bit 0 = password; other bits must be 0)
 //   6       16    Argon2id salt (all zero when there is no password)
 //   22      24    crypto_secretstream_xchacha20poly1305 header
 //   46      ...   frames
 //
 // Each frame is a 4-byte big-endian ciphertext length followed by that many
-// bytes of secretstream ciphertext (plaintext + 17 bytes).
+// bytes of secretstream ciphertext (plaintext + 17 bytes). The first frame
+// is authenticated together with bytes 0..21 (magic, version, flags, salt)
+// as additional data. Nothing may follow the TAG_FINAL frame.
 //
-// Frame 1 holds the metadata JSON {type, text, filename, mime, size} and is
-// authenticated together with bytes 0..21 (magic, version, flags, salt) as
-// additional data. If the paste has no file, frame 1 carries TAG_FINAL.
-// Otherwise file frames follow: every frame but the last holds exactly
-// CHUNK_SIZE bytes of file content, and the last one carries TAG_FINAL.
-// Nothing may follow the TAG_FINAL frame.
+// Version 2 (padded): the frames carry one plaintext stream
+//
+//   4-byte big-endian metadata length || metadata JSON || file || zeros
+//
+// whose total length is paddedLength(4 + metadata length + file size).
+// Every frame but the last holds exactly CHUNK_SIZE bytes of that stream;
+// the last holds the rest (1 to CHUNK_SIZE bytes) and carries TAG_FINAL.
+// The frame layout, and so the blob size, depends only on the padded
+// length: text and file pastes of the same padded length look the same.
+// The zeros are encrypted and authenticated like everything else, and the
+// reader rejects any other padding length or any non-zero padding byte.
+//
+// Version 1 (unpadded, read only): frame 1 holds the metadata JSON. If the
+// paste has no file, frame 1 carries TAG_FINAL. Otherwise file frames
+// follow: every frame but the last holds exactly CHUNK_SIZE bytes of file
+// content, and the last one carries TAG_FINAL.
 
 export const MAGIC = new Uint8Array([0x4e, 0x42, 0x4e, 0x31]); // "NBN1"
-export const VERSION = 1;
+/** The version written for new pastes. */
+export const VERSION = 2;
+/** The unpadded version, still accepted when reading. */
+export const VERSION_UNPADDED = 1;
 export const FLAG_PASSWORD = 0x01;
 export const KNOWN_FLAGS = FLAG_PASSWORD;
 
@@ -39,6 +55,55 @@ export const MAX_META_BYTES = 16 * 1024 * 1024;
 export const MAX_FILENAME_LENGTH = 255;
 /** Longest MIME type kept in metadata. */
 export const MAX_MIME_LENGTH = 255;
+
+/** Size of the metadata length field at the start of a version 2 stream. */
+export const META_LENGTH_BYTES = 4;
+/**
+ * Every version 2 stream is at least this long, so all short pastes
+ * (passwords, keys, messages) have the same size. Small enough that a
+ * padded paste still fits the smallest allowed server limit (64 KiB).
+ */
+export const MIN_PADDED_LENGTH = 16 * 1024;
+/**
+ * Upper bound on a version 2 stream, far above any server limit. Keeps all
+ * size arithmetic exact (below 2^53).
+ */
+export const MAX_STREAM_LENGTH = 2 ** 48;
+
+/** Number of bits needed to write n (n >= 1). */
+function bitLength(n: number): number {
+  let bits = 0;
+  for (let v = n; v >= 1; v = Math.floor(v / 2)) bits++;
+  return bits;
+}
+
+/**
+ * The padded length of a version 2 stream holding n bytes: at least
+ * MIN_PADDED_LENGTH, and above that the Padmé function (Nikitin et al.,
+ * "Reducing Metadata Leakage from Encrypted Files and Communication with
+ * PURBs", 2019). Padmé rounds n up so that only its top
+ * floor(log2(floor(log2 n))) + 1 bits can be non-zero. That leaves about
+ * log2(log2 n) bits of size information, and adds less than 6.25% for
+ * streams up to 64 KiB, 3.125% up to 4 GiB and 1.5625% beyond.
+ */
+export function paddedLength(n: number): number {
+  if (!Number.isSafeInteger(n) || n < 0 || n > MAX_STREAM_LENGTH) throw new RangeError('bad stream length');
+  if (n <= MIN_PADDED_LENGTH) return MIN_PADDED_LENGTH;
+  const e = bitLength(n) - 1; // floor(log2 n)
+  const s = bitLength(e); // floor(log2 e) + 1
+  const step = 2 ** (e - s);
+  return Math.ceil(n / step) * step;
+}
+
+/** Number of frames that carry a version 2 stream of the given length. */
+export function frameCount(streamLength: number): number {
+  return Math.ceil(streamLength / CHUNK_SIZE);
+}
+
+/** Exact blob size of a version 2 paste with the given padded stream length. */
+export function blobSize(streamLength: number): number {
+  return HEADER_BYTES + frameCount(streamLength) * (FRAME_LENGTH_BYTES + ABYTES) + streamLength;
+}
 
 export type PasteErrorCode =
   | 'format' // not a Nullbin blob, or an unsupported version
@@ -84,6 +149,8 @@ export function buildPrefix(password: boolean, salt: Uint8Array): Uint8Array {
 }
 
 export interface Prefix {
+  /** VERSION or VERSION_UNPADDED. */
+  version: number;
   password: boolean;
   salt: Uint8Array;
 }
@@ -94,7 +161,10 @@ export function parsePrefix(p: Uint8Array): Prefix {
   for (let i = 0; i < MAGIC.length; i++) {
     if (p[i] !== MAGIC[i]) throw new PasteError('format', 'Not a Nullbin paste.');
   }
-  if (p[4] !== VERSION) throw new PasteError('format', 'This paste uses an unsupported format version.');
+  const version = p[4] ?? 0;
+  if (version !== VERSION && version !== VERSION_UNPADDED) {
+    throw new PasteError('format', 'This paste uses an unsupported format version.');
+  }
   const flags = p[5] ?? 0;
   if ((flags & ~KNOWN_FLAGS) !== 0) throw new PasteError('format', 'This paste uses unknown options.');
   const password = (flags & FLAG_PASSWORD) !== 0;
@@ -102,7 +172,7 @@ export function parsePrefix(p: Uint8Array): Prefix {
   if (!password && salt.some((b) => b !== 0)) {
     throw new PasteError('format', 'Malformed paste header.');
   }
-  return { password, salt };
+  return { version, password, salt };
 }
 
 export function encodeFrameLength(n: number): Uint8Array {
@@ -115,20 +185,11 @@ export function decodeFrameLength(b: Uint8Array): number {
   return new DataView(b.buffer, b.byteOffset, b.byteLength).getUint32(0, false);
 }
 
-/** Number of file frames used for a file of the given size. */
-export function fileFrameCount(size: number): number {
-  return size === 0 ? 1 : Math.ceil(size / CHUNK_SIZE);
-}
-
-/** Exact blob size for a metadata frame of metaBytes and an optional file. */
-export function blobSize(metaBytes: number, fileSize: number | null): number {
-  let n = HEADER_BYTES + FRAME_LENGTH_BYTES + ABYTES + metaBytes;
-  if (fileSize !== null) n += fileFrameCount(fileSize) * (FRAME_LENGTH_BYTES + ABYTES) + fileSize;
-  return n;
-}
-
-/** Validates decrypted metadata. Anything unexpected is rejected. */
-export function parseMeta(bytes: Uint8Array, final: boolean): PasteMeta {
+/**
+ * Validates decrypted metadata. Anything unexpected is rejected. Callers
+ * check that the rest of the stream matches the type and size.
+ */
+export function parseMeta(bytes: Uint8Array): PasteMeta {
   let v: unknown;
   try {
     v = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
@@ -145,11 +206,10 @@ export function parseMeta(bytes: Uint8Array, final: boolean): PasteMeta {
   if (typeof size !== 'number' || !Number.isSafeInteger(size) || size < 0) throw bad();
   if (typeof discussion !== 'boolean') throw bad();
   if (type === 'text') {
-    if (!final || filename !== null || mime !== null || size !== 0) throw bad();
+    if (filename !== null || mime !== null || size !== 0) throw bad();
     return { type, text, filename: null, mime: null, size: 0, discussion };
   }
   if (type === 'file') {
-    if (final) throw bad();
     if (typeof filename !== 'string' || filename.length === 0 || filename.length > MAX_FILENAME_LENGTH) throw bad();
     if (mime !== null && (typeof mime !== 'string' || mime.length > MAX_MIME_LENGTH)) throw bad();
     return { type, text, filename, mime, size, discussion };

@@ -64,11 +64,11 @@ async function open(sodium: Awaited<ReturnType<typeof loadSodium>>, blob: Uint8A
   }
 }
 
-test('altered paste data never decrypts to anything but the original', async () => {
+for (const [label, withFile] of [['file paste', true], ['short text paste', false]] as const) test(`altered paste data never decrypts to anything but the original (${label})`, async () => {
   const sodium = await loadSodium();
-  const r = rng(0x5eed1);
-  const file = new Blob([r.bytes(64 * 1024 * 2 + 777)]);
-  const prepared = preparePaste(sodium, { text: 'secret text', file, filename: 'a.bin', mime: null, password: '', discussion: false });
+  const r = rng(withFile ? 0x5eed1 : 0x5eed2);
+  const file = withFile ? new Blob([r.bytes(64 * 1024 * 2 + 777)]) : null;
+  const prepared = preparePaste(sodium, { text: 'secret text', file, filename: withFile ? 'a.bin' : null, mime: null, password: '', discussion: false });
   const key = prepared.fragmentKey.slice();
   const original = await blobOf(prepared);
   const want = await open(sodium, original, key, 4096);
@@ -108,9 +108,11 @@ test('the blob prefix parser accepts only well-formed prefixes', () => {
   const r = rng(2);
   for (let i = 0; i < 20_000; i++) {
     const p = r.bytes(PREFIX_BYTES);
-    if (i % 2) p.set([0x4e, 0x42, 0x4e, 0x31, 1], 0); // often a valid magic and version
+    if (i % 2) p.set([0x4e, 0x42, 0x4e, 0x31, 1 + (i % 4 === 1 ? 1 : 0)], 0); // often a valid magic and version
     try {
       const got = parsePrefix(p);
+      assert.ok(got.version === 1 || got.version === 2);
+      assert.equal(got.version, p[4]);
       assert.equal(p[5]! & ~1, 0);
       if (!got.password) assert.ok(got.salt.every((x) => x === 0));
     } catch (e) {
@@ -128,16 +130,15 @@ test('the metadata parser accepts only the exact schema', () => {
     const fields: string[] = [];
     for (const k of keys) if (r.int(4) !== 0 || i % 3 === 0) fields.push(`"${k}":${values[r.int(values.length)]}`);
     const json = r.int(20) === 0 ? String.fromCharCode(...r.bytes(20)) : `{${fields.join(',')}}`;
-    for (const final of [true, false]) {
-      try {
-        const m = parseMeta(enc.encode(json), final);
-        assert.ok(m.type === 'text' || m.type === 'file');
-        assert.ok(Number.isSafeInteger(m.size) && m.size >= 0);
-        assert.equal(typeof m.discussion, 'boolean');
-        assert.equal(Object.getPrototypeOf(m), Object.prototype);
-      } catch (e) {
-        assert.ok(e instanceof PasteError);
-      }
+    try {
+      const m = parseMeta(enc.encode(json));
+      assert.ok(m.type === 'text' || m.type === 'file');
+      assert.ok(Number.isSafeInteger(m.size) && m.size >= 0);
+      if (m.type === 'text') assert.ok(m.size === 0 && m.filename === null && m.mime === null);
+      assert.equal(typeof m.discussion, 'boolean');
+      assert.equal(Object.getPrototypeOf(m), Object.prototype);
+    } catch (e) {
+      assert.ok(e instanceof PasteError);
     }
   }
 });

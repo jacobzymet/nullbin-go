@@ -482,7 +482,9 @@ hosting provider.
 
 The server stores only encrypted pastes and what it needs to serve them:
 size, creation and expiry times, burn and discussion settings, and hashes of
-access tokens. It does not log IP addresses, paste IDs or tokens, and keeps
+access tokens. The size is padded before encryption: every paste up to
+16 KiB is the same size, and larger ones are rounded up, so the size shows
+only a rough range. It does not log IP addresses, paste IDs or tokens, and keeps
 nothing linking a paste to who uploaded it. So you cannot read a reported
 paste, and you have no uploader details to hand over. Expired and deleted
 pastes are removed from disk within a minute, but backups and disk
@@ -535,7 +537,7 @@ Links can linger in browser history, chat logs and clipboard history.
   static host in Option B) could change it to steal keys. Protect those
   accounts and keep the code updated.
 - **The API** could delete or withhold pastes, keep encrypted copies, and
-  see metadata such as sizes and times. It cannot read them.
+  see metadata such as padded sizes and times. It cannot read them.
 - **Your own device:** malware or a malicious browser extension can read
   anything you see.
 
@@ -589,7 +591,7 @@ Binary units are powers of 1,024. Text limits count JavaScript UTF-16 units.
 
 | Item | Limit |
 |---|---|
-| Paste size | 100 MiB by default; configurable from 64 KiB to 2 GiB, including encryption overhead. |
+| Paste size | 100 MiB by default; configurable from 64 KiB to 2 GiB, including encryption overhead and size padding (under 6.25%, and under 3.2% above 64 KiB). |
 | Text and metadata | The encrypted metadata, including the text, filename and type, must fit in 16 MiB. |
 | Attachments | Up to 100 files per paste, with optional text. Several files become one uncompressed zip archive in the sender's browser before encryption: names are stripped of folders, drive letters, control and direction characters and leading dots, and made unique; entries carry no real dates and are never executable. Filename and type up to 255 characters each. |
 | Text preview | Up to 5,000 lines or 100,000 characters. Copy, Raw text, Save document and Clone use the full text. |
@@ -599,7 +601,7 @@ Binary units are powers of 1,024. Text limits count JavaScript UTF-16 units.
 | Burn after reading | 1 to 1,000 authorized opens (default 1), counted before delivery and kept across restarts. |
 
 <details>
-<summary>Key derivation and version 1 data formats</summary>
+<summary>Key derivation and data formats</summary>
 
 Without a password, `master = link_secret`. With a password:
 
@@ -621,25 +623,44 @@ Each subkey is `crypto_kdf_derive_from_key(32, 1, context, master)`:
 The salt is public: random with a password, all zeros without. Access tokens
 are base64url encoded; the server stores only their hashes.
 
-**Encrypted paste, version 1:**
+**Encrypted paste, version 2** (written by this version):
 
 | Offset | Size | Field |
 |---|---|---|
 | 0 | 4 bytes | Magic `NBN1` |
-| 4 | 1 byte | Version `1` |
+| 4 | 1 byte | Version `2` |
 | 5 | 1 byte | Flags: bit 0 means password protected; other bits must be zero |
 | 6 | 16 bytes | Password salt |
 | 22 | 24 bytes | libsodium secretstream header |
 | 46 | rest | Encrypted frames |
 
 Each frame is a 4-byte big-endian ciphertext length, then the ciphertext
-(17 bytes of overhead). The first frame holds UTF-8 JSON with exactly
-`type`, `text`, `filename`, `mime`, `size` and `discussion`, and authenticates
-bytes 0 to 21. A text-only paste ends there with `TAG_FINAL`; otherwise file
-frames of 64 KiB follow, the last carrying `TAG_FINAL` (even for an empty
-file). Trailing bytes, bad lengths and incomplete streams are rejected. The
-total size is 46 bytes, plus 21 and the JSON size, plus the file size and 21
-bytes per file frame.
+(17 bytes of overhead). The first frame also authenticates bytes 0 to 21.
+Together the frames carry one padded stream:
+
+```text
+4-byte big-endian JSON length || UTF-8 JSON || file bytes || zero bytes
+```
+
+The JSON has exactly `type`, `text`, `filename`, `mime`, `size` and
+`discussion`. For `n` bytes of length, JSON and file, the stream is
+`padded(n)` bytes long: 16 KiB for anything up to 16 KiB, and above that
+the [Padmé](https://arxiv.org/abs/1806.03160) function, which keeps only the top `floor(log2(floor(log2 n))) + 1` bits
+of `n` (rounding up). Every frame but the last holds exactly 64 KiB of the
+stream; the last holds the rest and carries `TAG_FINAL`. The total size is
+46 bytes, plus the padded length, plus 21 bytes per frame, so it depends
+only on the padded length: text and file pastes of the same padded length
+look alike. Readers reject any other padded length, non-zero padding,
+short or empty frames, trailing bytes and incomplete streams.
+
+**Encrypted paste, version 1** (read only, so links from older versions
+keep working until they expire): the same header with version `1`. The
+first frame holds just the JSON. A text-only paste ends there with
+`TAG_FINAL`; otherwise file frames of 64 KiB follow, the last carrying
+`TAG_FINAL` (even for an empty file). There is no padding: the total size
+is 46 bytes, plus 21 and the JSON size, plus the file size and 21 bytes per
+file frame. Changing the version byte makes the first frame fail to
+authenticate.
 
 **Encrypted comment, version 1:** a version byte (`1`), a 24-byte nonce,
 then XChaCha20-Poly1305 ciphertext with a 16-byte tag, of UTF-8 JSON with

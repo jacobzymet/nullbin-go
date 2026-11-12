@@ -363,7 +363,10 @@ function describe(e: unknown): string {
   if (e instanceof ApiError) {
     if (e.status === 413) {
       const max = e.body['max_size'];
-      return typeof max === 'number' ? `This paste is too large. The limit on this server is ${formatBytes(max)}.` : 'This paste is too large.';
+      // The limit applies to the padded size, a few percent above the content.
+      return typeof max === 'number'
+        ? `This paste is too large. The limit on this server is ${formatBytes(max)}, including a few percent of padding that hides the exact size.`
+        : 'This paste is too large.';
     }
     if (e.status === 429) return 'Too many pastes in a short time. Wait a minute, then try again.';
     if (e.status === 507) return 'This server is out of storage space right now. Try again later, or try a smaller paste.';

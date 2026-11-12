@@ -12,7 +12,8 @@
 //     comment key       context "nbcmtenc"  encrypts comments (comments.ts)
 //     comment token     context "nbcmtacc"  sent to the server; its hash gates
 //                                           reading and posting comments
-// Encryption: crypto_secretstream_xchacha20poly1305 (see format.ts).
+// Encryption: crypto_secretstream_xchacha20poly1305 (see format.ts). New
+// pastes are padded (format version 2) so their size reveals only a range.
 
 import type { Sodium } from './sodium.ts';
 import {
@@ -24,14 +25,18 @@ import {
   MAX_FILENAME_LENGTH,
   MAX_META_BYTES,
   MAX_MIME_LENGTH,
+  MAX_STREAM_LENGTH,
+  META_LENGTH_BYTES,
   PasteError,
   PREFIX_BYTES,
   SALT_BYTES,
   STREAM_HEADER_BYTES,
+  VERSION,
   blobSize,
   buildPrefix,
   decodeFrameLength,
   encodeFrameLength,
+  paddedLength,
   parseMeta,
   parsePrefix,
   type PasteMeta,
@@ -133,6 +138,9 @@ export function preparePaste(sodium: Sodium, input: PasteInput): PreparedPaste {
   if (metaBytes.length > MAX_META_BYTES) {
     throw new PasteError('too-large', 'The text is too long. The limit is about 16 MiB.');
   }
+  const streamLength = META_LENGTH_BYTES + metaBytes.length + meta.size;
+  if (streamLength > MAX_STREAM_LENGTH) throw new PasteError('too-large', 'The file is too large.');
+  const padded = paddedLength(streamLength);
 
   const fragmentKey = sodium.randombytes_buf(KEY_BYTES);
   const salt = hasPassword ? sodium.randombytes_buf(SALT_BYTES) : new Uint8Array(SALT_BYTES);
@@ -157,37 +165,66 @@ export function preparePaste(sodium: Sodium, input: PasteInput): PreparedPaste {
     sodium.memzero(streamKey);
     const TAG_MESSAGE = sodium.crypto_secretstream_xchacha20poly1305_TAG_MESSAGE;
     const TAG_FINAL = sodium.crypto_secretstream_xchacha20poly1305_TAG_FINAL;
-    const frame = (plain: Uint8Array, ad: Uint8Array | null, tag: number): Uint8Array => {
-      const ct = sodium.crypto_secretstream_xchacha20poly1305_push(state, plain, ad, tag);
-      const out = new Uint8Array(FRAME_LENGTH_BYTES + ct.length);
-      out.set(encodeFrameLength(ct.length), 0);
-      out.set(ct, FRAME_LENGTH_BYTES);
-      return out;
-    };
 
     const head = new Uint8Array(PREFIX_BYTES + STREAM_HEADER_BYTES);
     head.set(prefix, 0);
     head.set(header, PREFIX_BYTES);
     yield head;
-    yield frame(metaBytes, prefix, file ? TAG_MESSAGE : TAG_FINAL);
-    if (!file) return;
 
-    if (file.size === 0) {
-      yield frame(new Uint8Array(0), null, TAG_FINAL);
-      return;
-    }
-    for (let off = 0; off < file.size; off += READ_BLOCK) {
-      const block = new Uint8Array(await file.slice(off, Math.min(off + READ_BLOCK, file.size)).arrayBuffer());
-      if (block.length !== Math.min(READ_BLOCK, file.size - off)) throw new Error('The file changed while reading it.');
-      for (let i = 0; i < block.length; i += CHUNK_SIZE) {
-        const piece = block.subarray(i, Math.min(i + CHUNK_SIZE, block.length));
-        const last = off + i + piece.length === file.size;
-        yield frame(piece, null, last ? TAG_FINAL : TAG_MESSAGE);
+    // The stream (metadata length, metadata, file, zero padding) is cut
+    // into frames of exactly CHUNK_SIZE bytes; only the last may be shorter.
+    const plain = new Uint8Array(CHUNK_SIZE);
+    let fill = 0; // bytes waiting in `plain`
+    let written = 0; // stream bytes already encrypted
+    const flush = (): Uint8Array => {
+      if (fill === 0 || written + fill > padded) throw new Error('padding length mismatch');
+      const final = written + fill === padded;
+      const ad = written === 0 ? prefix : null;
+      const ct = sodium.crypto_secretstream_xchacha20poly1305_push(state, plain.subarray(0, fill), ad, final ? TAG_FINAL : TAG_MESSAGE);
+      written += fill;
+      fill = 0;
+      const out = new Uint8Array(FRAME_LENGTH_BYTES + ct.length);
+      out.set(encodeFrameLength(ct.length), 0);
+      out.set(ct, FRAME_LENGTH_BYTES);
+      return out;
+    };
+    function* put(bytes: Uint8Array): Generator<Uint8Array, void, undefined> {
+      for (let off = 0; off < bytes.length; ) {
+        const n = Math.min(CHUNK_SIZE - fill, bytes.length - off);
+        plain.set(bytes.subarray(off, off + n), fill);
+        fill += n;
+        off += n;
+        if (fill === CHUNK_SIZE) yield flush();
       }
+    }
+
+    try {
+      yield* put(encodeFrameLength(metaBytes.length)); // same 4-byte big-endian encoding
+      yield* put(metaBytes);
+      if (file) {
+        // Exactly meta.size bytes, the size the padding was computed from.
+        const size = meta.size;
+        for (let off = 0; off < size; off += READ_BLOCK) {
+          const want = Math.min(READ_BLOCK, size - off);
+          const block = new Uint8Array(await file.slice(off, off + want).arrayBuffer());
+          if (block.length !== want || file.size !== size) throw new Error('The file changed while reading it.');
+          yield* put(block);
+        }
+      }
+      const zeros = new Uint8Array(CHUNK_SIZE);
+      for (let left = padded - streamLength; left > 0; ) {
+        const n = Math.min(left, CHUNK_SIZE);
+        yield* put(zeros.subarray(0, n));
+        left -= n;
+      }
+      if (fill > 0) yield flush();
+      if (written !== padded) throw new Error('padding length mismatch');
+    } finally {
+      sodium.memzero(plain);
     }
   }
 
-  return { fragmentKey, totalSize: blobSize(metaBytes.length, file ? file.size : null), commentToken, burnToken, chunks };
+  return { fragmentKey, totalSize: blobSize(padded), commentToken, burnToken, chunks };
 }
 
 export interface OpenedPaste {
@@ -210,11 +247,29 @@ export interface OpenedPaste {
  */
 export type PasswordPrompt = (attempt: number) => Promise<string | null>;
 
+type PullState = ReturnType<Sodium['crypto_secretstream_xchacha20poly1305_init_pull']>;
+interface Pulled {
+  message: Uint8Array;
+  tag: number;
+}
+
 async function readFrame(src: ByteReader, maxPlain: number): Promise<Uint8Array> {
   const len = decodeFrameLength(await src.read(FRAME_LENGTH_BYTES));
   if (len < ABYTES || len > maxPlain + ABYTES) throw new PasteError('format', 'Malformed paste data.');
   return src.read(len);
 }
+
+/** Decrypts one frame; null if it is not authentic. */
+function pull(sodium: Sodium, state: PullState, ct: Uint8Array, ad: Uint8Array | null): Pulled | null {
+  try {
+    return sodium.crypto_secretstream_xchacha20poly1305_pull(state, ct, ad) || null;
+  } catch {
+    return null;
+  }
+}
+
+const malformed = () => new PasteError('format', 'Malformed paste data.');
+const trailing = () => new PasteError('tampered', 'Unexpected data after the end of the paste.');
 
 /**
  * Opens a paste: parses the header, asks for a password if needed,
@@ -230,24 +285,15 @@ export async function openPaste(
   if (fragmentKey.length !== KEY_BYTES) throw new PasteError('wrong-key', 'The link is not valid.');
   const prefixBytes = await src.read(PREFIX_BYTES);
   const prefix = parsePrefix(prefixBytes);
+  const padded = prefix.version === VERSION;
   const header = await src.read(STREAM_HEADER_BYTES);
-  const first = await readFrame(src, MAX_META_BYTES);
-
-  const TAG_MESSAGE = sodium.crypto_secretstream_xchacha20poly1305_TAG_MESSAGE;
-  const TAG_FINAL = sodium.crypto_secretstream_xchacha20poly1305_TAG_FINAL;
-  const pull = (state: ReturnType<Sodium['crypto_secretstream_xchacha20poly1305_init_pull']>, ct: Uint8Array, ad: Uint8Array | null) => {
-    try {
-      return sodium.crypto_secretstream_xchacha20poly1305_pull(state, ct, ad) || null;
-    } catch {
-      return null;
-    }
-  };
+  const first = await readFrame(src, padded ? CHUNK_SIZE : MAX_META_BYTES);
 
   const tryKey = (master: Uint8Array) => {
     const streamKey = subkey(sodium, master, 'nbstream');
     const state = sodium.crypto_secretstream_xchacha20poly1305_init_pull(header, streamKey);
     sodium.memzero(streamKey);
-    const res = pull(state, first, prefixBytes);
+    const res = pull(sodium, state, first, prefixBytes);
     return res ? { state, res } : null;
   };
 
@@ -278,46 +324,130 @@ export async function openPaste(
     }
   }
 
-  const { state, res } = opened;
-  if (res.tag !== TAG_MESSAGE && res.tag !== TAG_FINAL) {
-    sodium.memzero(master);
-    throw new PasteError('format', 'Malformed paste data.');
-  }
-  const final = res.tag === TAG_FINAL;
-  let meta: PasteMeta;
   try {
-    meta = parseMeta(res.message, final);
-  } catch (e) {
+    return padded
+      ? await openPadded(sodium, src, opened.state, opened.res, master)
+      : await openUnpadded(sodium, src, opened.state, opened.res, master);
+  } finally {
     sodium.memzero(master);
-    throw e;
   }
+}
+
+/**
+ * Format version 2. Reads the metadata from the stream, then checks that
+ * the stream ends exactly at the padded length, with only zeros after the
+ * content. The caller zeroes master.
+ */
+async function openPadded(sodium: Sodium, src: ByteReader, state: PullState, first: Pulled, master: Uint8Array): Promise<OpenedPaste> {
+  const TAG_MESSAGE = sodium.crypto_secretstream_xchacha20poly1305_TAG_MESSAGE;
+  const TAG_FINAL = sodium.crypto_secretstream_xchacha20poly1305_TAG_FINAL;
+  // Every frame but the last is full, and no frame is empty.
+  const validFrame = (r: Pulled) =>
+    (r.tag === TAG_MESSAGE && r.message.length === CHUNK_SIZE) || (r.tag === TAG_FINAL && r.message.length > 0);
+  if (!validFrame(first)) throw malformed();
+
+  let buf = first.message; // decrypted bytes not yet consumed
+  let final = first.tag === TAG_FINAL; // buf is the end of the stream
+  let decrypted = first.message.length; // stream bytes decrypted so far
+  let expected = MAX_STREAM_LENGTH; // the padded length, once the metadata is known
+
+  const nextFrame = async () => {
+    if (final) throw malformed(); // the stream ended before its content did
+    const r = pull(sodium, state, await readFrame(src, CHUNK_SIZE), null);
+    if (!r) throw new PasteError('tampered', 'The paste was modified or corrupted.');
+    if (!validFrame(r)) throw malformed();
+    decrypted += r.message.length;
+    if (decrypted > expected) throw malformed();
+    final = r.tag === TAG_FINAL;
+    buf = r.message;
+  };
+  const readExact = async (n: number): Promise<Uint8Array> => {
+    const out = new Uint8Array(n);
+    for (let off = 0; off < n; ) {
+      if (buf.length === 0) await nextFrame();
+      const k = Math.min(n - off, buf.length);
+      out.set(buf.subarray(0, k), off);
+      buf = buf.subarray(k);
+      off += k;
+    }
+    return out;
+  };
+  // Everything after the content must be zeros, up to exactly the padded
+  // length, and nothing may follow the stream.
+  const finish = async () => {
+    for (;;) {
+      for (const b of buf) if (b !== 0) throw malformed();
+      buf = new Uint8Array(0);
+      if (final) break;
+      await nextFrame();
+    }
+    if (decrypted !== expected) throw malformed();
+    if (!(await src.atEnd())) throw trailing();
+  };
+
+  const metaLength = decodeFrameLength(await readExact(META_LENGTH_BYTES)); // same 4-byte encoding
+  if (metaLength > MAX_META_BYTES) throw malformed();
+  const meta = parseMeta(await readExact(metaLength));
+  const contentLength = META_LENGTH_BYTES + metaLength + meta.size;
+  if (contentLength > MAX_STREAM_LENGTH) throw malformed();
+  expected = paddedLength(contentLength);
+  if (decrypted > expected || (final && decrypted !== expected)) throw malformed();
+  const discussion = meta.discussion ? discussionKeys(sodium, master) : null;
+  sodium.memzero(master);
+
+  if (meta.type === 'text') {
+    await finish();
+    return { meta, discussion, file: null };
+  }
+  async function* file(): AsyncGenerator<Uint8Array, void, undefined> {
+    for (let left = meta.size; left > 0; ) {
+      if (buf.length === 0) await nextFrame();
+      const k = Math.min(left, buf.length);
+      const piece = buf.subarray(0, k);
+      buf = buf.subarray(k);
+      left -= k;
+      yield piece;
+    }
+    await finish();
+  }
+  return { meta, discussion, file: file() };
+}
+
+/** Format version 1 (unpadded), read only. The caller zeroes master. */
+async function openUnpadded(sodium: Sodium, src: ByteReader, state: PullState, first: Pulled, master: Uint8Array): Promise<OpenedPaste> {
+  const TAG_MESSAGE = sodium.crypto_secretstream_xchacha20poly1305_TAG_MESSAGE;
+  const TAG_FINAL = sodium.crypto_secretstream_xchacha20poly1305_TAG_FINAL;
+  if (first.tag !== TAG_MESSAGE && first.tag !== TAG_FINAL) throw malformed();
+  const final = first.tag === TAG_FINAL;
+  const meta = parseMeta(first.message);
+  // A text paste is the final frame; a file paste is followed by file frames.
+  if ((meta.type === 'text') !== final) throw new PasteError('format', 'Malformed paste metadata.');
   const discussion = meta.discussion ? discussionKeys(sodium, master) : null;
   sodium.memzero(master);
   if (final) {
-    if (!(await src.atEnd())) throw new PasteError('tampered', 'Unexpected data after the end of the paste.');
+    if (!(await src.atEnd())) throw trailing();
     return { meta, discussion, file: null };
   }
 
-  const s = state;
   async function* file(): AsyncGenerator<Uint8Array, void, undefined> {
     let total = 0;
     for (;;) {
       if (await src.atEnd()) throw new PasteError('truncated', 'The paste is incomplete (the data ended early).');
       const ct = await readFrame(src, CHUNK_SIZE);
-      const r = pull(s, ct, null);
+      const r = pull(sodium, state, ct, null);
       if (!r) throw new PasteError('tampered', 'The paste was modified or corrupted.');
       const n = r.message.length;
       total += n;
       if (r.tag === TAG_MESSAGE) {
-        if (n !== CHUNK_SIZE || total >= meta.size) throw new PasteError('format', 'Malformed paste data.');
+        if (n !== CHUNK_SIZE || total >= meta.size) throw malformed();
         yield r.message;
         continue;
       }
-      if (r.tag !== TAG_FINAL) throw new PasteError('format', 'Malformed paste data.');
+      if (r.tag !== TAG_FINAL) throw malformed();
       if (total !== meta.size || (n === 0 && meta.size !== 0)) {
         throw new PasteError('tampered', 'The file size does not match.');
       }
-      if (!(await src.atEnd())) throw new PasteError('tampered', 'Unexpected data after the end of the paste.');
+      if (!(await src.atEnd())) throw trailing();
       yield r.message;
       return;
     }
