@@ -1,9 +1,18 @@
 // Encrypted comments for discussion pastes.
 //
-// Wire format of one comment (what the server stores):
-//   version (1 byte = 1) || nonce (24 bytes) ||
-//   XChaCha20-Poly1305(JSON {id, parent, name, text, time},
-//                      key = comment key, AD = "nullbin comment v1 <paste id>")
+// Wire format of one comment (what the server stores), version 2:
+//   version (1 byte = 2) || nonce (24 bytes) ||
+//   XChaCha20-Poly1305(length of JSON (4 bytes, big-endian) ||
+//                      JSON {id, parent, name, text, time} || zeros,
+//                      key = comment key, AD = "nullbin comment v2 <paste id>")
+// The plaintext is padded to paddedLength(4 + JSON length,
+// COMMENT_PADDED_LENGTH): 4 KiB for every comment that fits, which is
+// almost all of them, so the server cannot tell a short reply from a long
+// one. Readers accept only that exact length with zero padding.
+//
+// Version 1 (written before padding, still read): the same without the
+// length and padding, with AD "nullbin comment v1 <paste id>". The version
+// is part of the AD, so a comment cannot be relabelled as the other version.
 //
 // The comment key and the access token come from the paste's master key
 // (see crypto.ts), so only readers who know the link and the password can
@@ -14,9 +23,14 @@
 // under any name.
 
 import type { Sodium } from './sodium.ts';
-import { PasteError } from './format.ts';
+import { PasteError, paddedLength } from './format.ts';
 
-export const COMMENT_VERSION = 1;
+export const COMMENT_VERSION = 2;
+/** Unpadded comments, written before version 2. Still read. */
+export const COMMENT_VERSION_UNPADDED = 1;
+/** Every comment's plaintext is padded to at least this many bytes. */
+export const COMMENT_PADDED_LENGTH = 4 * 1024;
+const LENGTH_BYTES = 4;
 export const MAX_NAME_LENGTH = 40;
 export const MAX_COMMENT_LENGTH = 4000;
 /** Must match the server's limit. */
@@ -25,6 +39,7 @@ export const MAX_COMMENT_BYTES = 32 * 1024;
 export const MAX_COMMENT_TIME = 8_640_000_000_000_000;
 
 const NONCE_BYTES = 24;
+const TAG_BYTES = 16;
 const ID = /^[0-9a-f]{32}$/;
 // Control characters, bidi overrides and invisible characters, which could
 // disguise a name.
@@ -47,8 +62,8 @@ export function cleanName(name: string): string {
   return name.replace(UNSAFE_CHARS, '').replace(/\s+/g, ' ').trim().slice(0, MAX_NAME_LENGTH);
 }
 
-function ad(pasteId: string): Uint8Array {
-  return new TextEncoder().encode(`nullbin comment v1 ${pasteId}`);
+function ad(version: number, pasteId: string): Uint8Array {
+  return new TextEncoder().encode(`nullbin comment v${version} ${pasteId}`);
 }
 
 /** Encrypts a new comment. Throws PasteError if it is empty or too long. */
@@ -73,9 +88,12 @@ export function encryptComment(
     text,
     time: Math.floor(now),
   };
-  const plain = new TextEncoder().encode(JSON.stringify(comment));
+  const json = new TextEncoder().encode(JSON.stringify(comment));
+  const plain = new Uint8Array(paddedLength(LENGTH_BYTES + json.length, COMMENT_PADDED_LENGTH)); // zero-filled
+  new DataView(plain.buffer).setUint32(0, json.length);
+  plain.set(json, LENGTH_BYTES);
   const nonce = sodium.randombytes_buf(NONCE_BYTES);
-  const ct = sodium.crypto_aead_xchacha20poly1305_ietf_encrypt(plain, ad(pasteId), null, nonce, key);
+  const ct = sodium.crypto_aead_xchacha20poly1305_ietf_encrypt(plain, ad(COMMENT_VERSION, pasteId), null, nonce, key);
   const bytes = new Uint8Array(1 + NONCE_BYTES + ct.length);
   bytes[0] = COMMENT_VERSION;
   bytes.set(nonce, 1);
@@ -90,22 +108,34 @@ export function encryptComment(
  * tampering, another paste's comment, an unknown version).
  */
 export function decryptComment(sodium: Sodium, key: Uint8Array, pasteId: string, bytes: Uint8Array): Comment | null {
-  if (bytes.length < 1 + NONCE_BYTES + 16 || bytes.length > MAX_COMMENT_BYTES || bytes[0] !== COMMENT_VERSION) return null;
+  const version = bytes[0];
+  if (bytes.length < 1 + NONCE_BYTES + TAG_BYTES || bytes.length > MAX_COMMENT_BYTES) return null;
+  if (version !== COMMENT_VERSION && version !== COMMENT_VERSION_UNPADDED) return null;
   let plain: Uint8Array;
   try {
     plain = sodium.crypto_aead_xchacha20poly1305_ietf_decrypt(
       null,
       bytes.subarray(1 + NONCE_BYTES),
-      ad(pasteId),
+      ad(version, pasteId),
       bytes.subarray(1, 1 + NONCE_BYTES),
       key,
     );
   } catch {
     return null;
   }
+  let json = plain;
+  if (version === COMMENT_VERSION) {
+    // Exactly the padded length for this JSON length, and only zeros after it.
+    if (plain.length < LENGTH_BYTES) return null;
+    const length = new DataView(plain.buffer, plain.byteOffset, plain.byteLength).getUint32(0);
+    // Also rules out a length past the end: the padded length is never shorter.
+    if (plain.length !== paddedLength(LENGTH_BYTES + length, COMMENT_PADDED_LENGTH)) return null;
+    if (!plain.subarray(LENGTH_BYTES + length).every((b) => b === 0)) return null;
+    json = plain.subarray(LENGTH_BYTES, LENGTH_BYTES + length);
+  }
   let v: unknown;
   try {
-    v = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(plain));
+    v = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(json));
   } catch {
     return null;
   }

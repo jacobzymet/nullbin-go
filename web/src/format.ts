@@ -79,7 +79,8 @@ function bitLength(n: number): number {
 
 /**
  * The padded length of a version 2 stream holding n bytes: at least
- * MIN_PADDED_LENGTH, and above that the Padmé function (Nikitin et al.,
+ * `minimum` (MIN_PADDED_LENGTH for pastes, COMMENT_PADDED_LENGTH for
+ * comments, both powers of two), and above that the Padmé function (Nikitin et al.,
  * "Reducing Metadata Leakage from Encrypted Files and Communication with
  * PURBs", 2019). Padmé rounds n up so that only its top
  * floor(log2(floor(log2 n))) + 2 bits can be non-zero. That leaves
@@ -87,9 +88,9 @@ function bitLength(n: number): number {
  * 100 MiB), and adds less than 6.25% for streams up to 64 KiB, 3.125% up to
  * 4 GiB and 1.5625% beyond (before the 21 bytes of framing per 64 KiB).
  */
-export function paddedLength(n: number): number {
+export function paddedLength(n: number, minimum: number = MIN_PADDED_LENGTH): number {
   if (!Number.isSafeInteger(n) || n < 0 || n > MAX_STREAM_LENGTH) throw new RangeError('bad stream length');
-  if (n <= MIN_PADDED_LENGTH) return MIN_PADDED_LENGTH;
+  if (n <= minimum) return minimum;
   const e = bitLength(n) - 1; // floor(log2 n)
   const s = bitLength(e); // floor(log2 e) + 1
   const step = 2 ** (e - s);

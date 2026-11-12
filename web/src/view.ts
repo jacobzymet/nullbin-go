@@ -111,7 +111,7 @@ async function open(id: string, key: Uint8Array, burn: boolean, shareURL: string
     reader = new ByteReader(body, (received) => {
       if (size > 0) progress.set(received / size, `${formatBytes(received)} of ${formatBytes(size)}`);
     });
-    window.addEventListener('pagehide', () => { void reader?.cancel(); file?.wipe(); }, { once: true });
+    window.addEventListener('pagehide', () => { void reader?.cancel(); file?.wipe(); });
     opened = await openPaste(sodium, reader, key, (attempt) => {
       if (password !== null && attempt === 0) return Promise.resolve(password);
       asked = true;
@@ -136,7 +136,7 @@ async function open(id: string, key: Uint8Array, burn: boolean, shareURL: string
     if (opened?.discussion) sodium.memzero(opened.discussion.key);
     file?.wipe();
     await reader?.cancel();
-    showFailure(e);
+    showFailure(e, burn);
     return;
   } finally {
     password = null;
@@ -161,6 +161,20 @@ async function open(id: string, key: Uint8Array, burn: boolean, shareURL: string
   if (meta.text.length > 0 || !opened.file) renderText(meta.text);
   const attachment = file ? renderFile(file, meta.filename, meta.size, meta.mime, () => reader!.cancel()) : null;
   initReaderActions(meta.text, shareURL, !burn || readsRemaining > 0, attachment);
+  if (file) {
+    // Leaving the page wipes the attachment. If the browser restores the page
+    // from its back/forward cache, keep the text but say the file is gone
+    // and turn off what needs it, instead of leaving buttons that fail.
+    window.addEventListener('pageshow', (event) => {
+      if (!event.persisted) return;
+      show(el('save-file'), false);
+      show(el('image-show'), false);
+      el<HTMLButtonElement>('view-clone').disabled = true;
+      const err = el('file-error');
+      err.textContent = `The attachment was cleared from memory when you left this page. ${burn ? 'This paste burns after reading, so it may no longer be available.' : 'Open the link again to get it.'}`;
+      reveal(err);
+    });
+  }
   reveal(el('view-content'));
   el('view-title').focus();
   announce(opened.file ? 'Paste decrypted. A file is attached.' : 'Paste decrypted.');
@@ -436,7 +450,7 @@ export function safeFilename(name: string | null): string {
   return cleanFileName(name ?? '', 'download');
 }
 
-function showFailure(e: unknown): void {
+function showFailure(e: unknown, burn: boolean): void {
   if (e instanceof ApiError && e.status === 404) {
     showProblem('This paste doesn’t exist', 'It may have expired or been deleted. If it burns after reading, someone has already opened it.');
     return;
@@ -450,7 +464,9 @@ function showFailure(e: unknown): void {
         showProblem('This paste can’t be decrypted', 'The key in the link doesn’t match. Check that you copied the whole link, including everything after #.');
         return;
       case 'network':
-        showProblem('The download stopped', 'Check your connection, then open the link again.');
+        showProblem('The download stopped', burn
+          ? 'Check your connection. This paste burns after reading, so the failed download may have used up an open; if it was the last one, the paste is gone.'
+          : 'Check your connection, then open the link again.');
         return;
       case 'truncated':
       case 'tampered':

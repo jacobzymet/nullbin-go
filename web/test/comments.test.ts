@@ -4,16 +4,34 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { loadSodium } from '../src/sodium.ts';
-import { buildThread, uniqueComments, cleanName, decryptComment, encryptComment, MAX_COMMENT_BYTES, MAX_COMMENT_LENGTH, type Comment } from '../src/comments.ts';
-import { PasteError } from '../src/format.ts';
+import { buildThread, uniqueComments, cleanName, decryptComment, encryptComment, COMMENT_PADDED_LENGTH, MAX_COMMENT_BYTES, MAX_COMMENT_LENGTH, type Comment } from '../src/comments.ts';
+import { PasteError, paddedLength } from '../src/format.ts';
 
 const sodium = await loadSodium();
 const key = sodium.randombytes_buf(32);
 const pasteId = '0123456789abcdef0123456789abcdef';
+const enc = new TextEncoder();
+/** Fixed overhead of a stored comment: version byte, nonce and tag. */
+const OVERHEAD = 1 + 24 + 16;
+
+/** Seals any plaintext as a comment of the given version, with that version's AD unless another is given. */
+function sealRaw(version: number, plain: Uint8Array, adVersion = version): Uint8Array {
+  const nonce = sodium.randombytes_buf(24);
+  const ct = sodium.crypto_aead_xchacha20poly1305_ietf_encrypt(plain, enc.encode(`nullbin comment v${adVersion} ${pasteId}`), null, nonce, key);
+  return new Uint8Array([version, ...nonce, ...ct]);
+}
+
+/** A version 2 plaintext: a 4-byte length, the JSON, then zeros up to `padTo` (the canonical length by default). */
+function padded(json: Uint8Array, padTo = paddedLength(4 + json.length, COMMENT_PADDED_LENGTH), length = json.length): Uint8Array {
+  const out = new Uint8Array(padTo);
+  if (padTo >= 4) new DataView(out.buffer).setUint32(0, length);
+  out.set(json.subarray(0, Math.max(0, Math.min(json.length, padTo - 4))), 4);
+  return out;
+}
 
 test('comment round trip', () => {
   const { bytes, comment } = encryptComment(sodium, key, pasteId, { parent: null, name: '  Ada  ', text: '  Looks good.\nShip it.  ' }, 1_700_000_000_000);
-  assert.equal(bytes[0], 1);
+  assert.equal(bytes[0], 2);
   assert.deepEqual(comment, { id: comment.id, parent: null, name: 'Ada', text: 'Looks good.\nShip it.', time: 1_700_000_000_000 });
   assert.match(comment.id, /^[0-9a-f]{32}$/);
   assert.deepEqual(decryptComment(sodium, key, pasteId, bytes), comment);
@@ -41,12 +59,10 @@ test('anything inauthentic decrypts to null', () => {
   assert.equal(decryptComment(sodium, key, pasteId, sodium.randombytes_buf(100)), null, 'garbage');
 });
 
-test('well-encrypted but malformed comments are rejected', () => {
+for (const version of [2, 1]) test(`well-encrypted but malformed comments are rejected (version ${version})`, () => {
   const seal = (v: unknown) => {
-    const nonce = sodium.randombytes_buf(24);
-    const ct = sodium.crypto_aead_xchacha20poly1305_ietf_encrypt(
-      new TextEncoder().encode(JSON.stringify(v)), new TextEncoder().encode(`nullbin comment v1 ${pasteId}`), null, nonce, key);
-    return new Uint8Array([1, ...nonce, ...ct]);
+    const json = enc.encode(JSON.stringify(v));
+    return sealRaw(version, version === 2 ? padded(json) : json);
   };
   const ok = { id: 'a'.repeat(32), parent: null, name: 'n', text: 't', time: 1 };
   assert.ok(decryptComment(sodium, key, pasteId, seal(ok)));
@@ -75,6 +91,70 @@ test('empty and oversized comments are refused before sending', () => {
   // characters that JSON escapes into six bytes.
   const { bytes } = encryptComment(sodium, key, pasteId, { parent: null, name: 'n'.repeat(40), text: '"'.repeat(MAX_COMMENT_LENGTH) });
   assert.ok(bytes.length <= MAX_COMMENT_BYTES);
+});
+
+test('comments are padded: every ordinary comment has the same size', () => {
+  const sizes = new Set<number>();
+  for (const text of ['y', 'no', 'x'.repeat(500), 'Longer reply. '.repeat(300).slice(0, 3800)]) {
+    for (const name of ['', 'Ada', 'n'.repeat(40)]) {
+      for (const parent of [null, 'b'.repeat(32)]) {
+        const { bytes, comment } = encryptComment(sodium, key, pasteId, { parent, name, text });
+        sizes.add(bytes.length);
+        assert.deepEqual(decryptComment(sodium, key, pasteId, bytes), comment);
+      }
+    }
+  }
+  assert.deepEqual([...sizes], [OVERHEAD + COMMENT_PADDED_LENGTH]);
+});
+
+test('longer comments are rounded up to a padded length, and the longest still fits', () => {
+  // Characters that take more than one byte in JSON push 4,000 of them past
+  // the minimum; a control character or lone surrogate takes six.
+  for (const text of ['é'.repeat(MAX_COMMENT_LENGTH), '"'.repeat(MAX_COMMENT_LENGTH), '\u0001'.repeat(MAX_COMMENT_LENGTH)]) {
+    const { bytes, comment } = encryptComment(sodium, key, pasteId, { parent: 'c'.repeat(32), name: '\uD800'.repeat(40), text });
+    const json = enc.encode(JSON.stringify(comment)).length;
+    assert.ok(4 + json > COMMENT_PADDED_LENGTH);
+    assert.equal(bytes.length, OVERHEAD + paddedLength(4 + json, COMMENT_PADDED_LENGTH));
+    assert.ok(bytes.length <= MAX_COMMENT_BYTES, `${bytes.length} bytes`);
+    assert.deepEqual(decryptComment(sodium, key, pasteId, bytes), comment);
+  }
+});
+
+test('version 2 comments must carry exactly their padding', () => {
+  const json = enc.encode(JSON.stringify({ id: 'a'.repeat(32), parent: null, name: 'n', text: 't', time: 1 }));
+  assert.ok(decryptComment(sodium, key, pasteId, sealRaw(2, padded(json))));
+  const nonZero = padded(json);
+  nonZero[nonZero.length - 1] = 1;
+  const cases: [string, Uint8Array][] = [
+    ['unpadded', padded(json, 4 + json.length)],
+    ['one byte short', padded(json, COMMENT_PADDED_LENGTH - 1)],
+    ['one byte long', padded(json, COMMENT_PADDED_LENGTH + 1)],
+    ['padded to the next size', padded(json, paddedLength(COMMENT_PADDED_LENGTH + 1, COMMENT_PADDED_LENGTH))],
+    ['non-zero padding', nonZero],
+    ['length past the end', padded(json, COMMENT_PADDED_LENGTH, COMMENT_PADDED_LENGTH)],
+    ['length cuts the JSON short', padded(json, COMMENT_PADDED_LENGTH, json.length - 1)],
+    ['length counts padding as JSON', padded(json, COMMENT_PADDED_LENGTH, json.length + 1)],
+    ['no room for the length', new Uint8Array(3)],
+    ['empty', new Uint8Array(0)],
+  ];
+  for (const [label, plain] of cases) assert.equal(decryptComment(sodium, key, pasteId, sealRaw(2, plain)), null, label);
+});
+
+test('version 1 comments still open, and neither version can pass as the other', () => {
+  const json = enc.encode(JSON.stringify({ id: 'a'.repeat(32), parent: null, name: 'n', text: 'old', time: 1 }));
+  assert.equal(decryptComment(sodium, key, pasteId, sealRaw(1, json))?.text, 'old');
+  assert.equal(decryptComment(sodium, key, pasteId, sealRaw(2, json, 1)), null, 'v1 relabelled as v2');
+  assert.equal(decryptComment(sodium, key, pasteId, sealRaw(1, padded(json), 2)), null, 'v2 relabelled as v1');
+  assert.equal(decryptComment(sodium, key, pasteId, sealRaw(1, padded(json))), null, 'a padded plaintext is not a v1 comment');
+  for (const version of [0, 3, 255]) {
+    for (const plain of [json, padded(json)]) assert.equal(decryptComment(sodium, key, pasteId, sealRaw(version, plain)), null, `version ${version}`);
+  }
+  const { bytes } = encryptComment(sodium, key, pasteId, { parent: null, name: '', text: 'new' });
+  for (const version of [1, 3]) {
+    const relabelled = bytes.slice();
+    relabelled[0] = version;
+    assert.equal(decryptComment(sodium, key, pasteId, relabelled), null, `relabelled as ${version}`);
+  }
 });
 
 test('names lose control and bidi characters', () => {

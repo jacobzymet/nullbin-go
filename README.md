@@ -483,9 +483,12 @@ hosting provider.
 The server stores only encrypted pastes and what it needs to serve them:
 size, creation and expiry times, burn and discussion settings, and hashes of
 access tokens. The size is padded before encryption: every paste whose
-encoded content fits in 16 KiB (a little less than 16 KiB of text) is the
+encoded content fits in 16 KiB (up to about 16,000 characters of plain
+English text; fewer with many line breaks, quotes or non-Latin characters,
+which take more than one byte each) is the
 same size, and larger ones are rounded up, so the size shows only a rough
-range. It does not log IP addresses, paste IDs or tokens, and keeps
+range. Comments are padded the same way: all but the longest take the same
+4 KiB. It does not log IP addresses, paste IDs or tokens, and keeps
 nothing linking a paste to who uploaded it. So you cannot read a reported
 paste, and you have no uploader details to hand over. Expired and deleted
 pastes are removed from disk within a minute, but backups and disk
@@ -578,7 +581,7 @@ reordered or truncated data, without holding whole files in memory.
 | Encryption key | A 32-byte stream key derived from the master key: the link secret alone, or the link secret combined with the password. |
 | Password | Argon2id v1.3 with a fresh 16-byte salt, `opslimit = 3`, `memlimit = 256 MiB` and a 32-byte result, after Unicode NFC normalization. Keyed BLAKE2b-256 combines it with the link secret. Neither the password nor the master key is sent to the API. |
 | Separate keys | Paste encryption, comment encryption, discussion access and burn access use distinct `crypto_kdf_derive_from_key` contexts. Access tokens sent to the server cannot decrypt anything. |
-| Comments | XChaCha20-Poly1305 with a fresh 24-byte random nonce, under the separate comment key, bound to the paste ID. Names, text, times and replies are encrypted. Names are not verified. |
+| Comments | XChaCha20-Poly1305 with a fresh 24-byte random nonce, under the separate comment key, bound to the paste ID. Names, text, times and replies are encrypted, and padded to 4 KiB (rounded up like pastes beyond that), so a comment's size does not show its length. Names are not verified. |
 | IDs and tokens | Paste IDs are 128 random bits (32 hexadecimal characters); upload and delete tokens are 256 random bits. The server stores SHA-256 hashes of tokens and compares them in constant time. |
 
 The part of the link before `#` finds the paste; browsers never send the
@@ -672,10 +675,21 @@ is 46 bytes, plus 21 and the JSON size, plus the file size and 21 bytes per
 file frame. Changing the version byte makes the first frame fail to
 authenticate.
 
-**Encrypted comment, version 1:** a version byte (`1`), a 24-byte nonce,
-then XChaCha20-Poly1305 ciphertext with a 16-byte tag, of UTF-8 JSON with
-`id`, `parent`, `name`, `text` and `time` (milliseconds). The additional
-authenticated data is `nullbin comment v1 <paste id>`.
+**Encrypted comment, version 2:** a version byte (`2`), a 24-byte nonce,
+then XChaCha20-Poly1305 ciphertext with a 16-byte tag. The plaintext is the
+length of the JSON (4 bytes, big-endian), UTF-8 JSON with `id`, `parent`,
+`name`, `text` and `time` (milliseconds), then zeros up to `padded(n)` for
+`n` = 4 + the JSON length, with a 4 KiB minimum instead of 16 KiB. Every
+comment whose JSON fits in 4,092 bytes (about 3,900 characters of plain
+English text) is stored as 4,137 bytes; the longest possible one is about
+24 KiB. The additional authenticated data is
+`nullbin comment v2 <paste id>`, so the version cannot be changed. Readers
+reject any other padded length and non-zero padding.
+
+**Encrypted comment, version 1** (written before comment padding, still
+read): the same without the length and padding: the plaintext is just the
+JSON, and the additional authenticated data is
+`nullbin comment v1 <paste id>`.
 
 Code: [paste crypto](web/src/crypto.ts), [format](web/src/format.ts),
 [comments](web/src/comments.ts), [links](web/src/link.ts).

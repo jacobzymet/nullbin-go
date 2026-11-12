@@ -167,7 +167,7 @@ test('comments: garbage never decrypts, and threads stay finite and complete', a
   const key = sodium.randombytes_buf(32);
   for (let i = 0; i < 20_000; i++) {
     const bytes = r.bytes(r.int(200));
-    if (bytes.length > 0 && r.int(2)) bytes[0] = 1;
+    if (bytes.length > 0 && r.int(2)) bytes[0] = 1 + r.int(2); // a known version
     assert.equal(decryptComment(sodium, key, ID, bytes), null);
   }
   // A real comment survives only unchanged and only for its own paste.

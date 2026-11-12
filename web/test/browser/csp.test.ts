@@ -781,6 +781,28 @@ test('a preview still loading when the page clears it never appears afterwards',
   }
 });
 
+test('a page restored after leaving keeps its text but says the wiped attachment is gone', async (t) => {
+  // Read-heavy: its own rate-limit budget, like the other extra scenarios.
+  await restartAPI();
+  t.after(() => restartAPI());
+  const { share } = await createPaste({ text: 'still here', file: { name: 'notes.txt', mimeType: 'text/plain', buffer: Buffer.from('secret file') } });
+  const h = await open();
+  await goto(h, share); await h.page.waitForSelector('#view-file-card:not([hidden])');
+  assert.ok(await h.page.isEnabled('#view-clone'));
+  // What the browser does when the page goes into, then comes back from, its back/forward cache.
+  await h.page.evaluate(() => {
+    window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true }));
+    window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }));
+  });
+  await h.page.waitForSelector('#file-error:not([hidden])');
+  assert.match((await h.page.textContent('#file-error')) ?? '', /cleared from memory/);
+  assert.equal(await h.page.isVisible('#save-file'), false);
+  assert.equal(await h.page.isVisible('#image-show'), false);
+  assert.ok(await h.page.isDisabled('#view-clone'));
+  assert.equal(await viewerText(h.page), 'still here');
+  await h.check(); await h.context.close();
+});
+
 test('password + file paste: wrong password, retry, verified download', async () => {
   const content = Buffer.alloc(300_000);
   for (let i = 0; i < content.length; i++) content[i] = (i * 31 + 7) & 0xff;
