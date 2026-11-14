@@ -76,7 +76,7 @@ COPY --from=api-build /out/nullbin /nullbin
 FROM caddy:2.11.8-alpine@sha256:f6228111e5fafa1a5238258d0858e103f10599b8d1659a146e7726681a002bb9 AS caddy-dist
 RUN mkdir -m 0700 -p /state/data /state/config
 
-FROM gcr.io/distroless/static-debian13:nonroot@sha256:25ac8f0c3b2334a9eb05452266bd4697864a8c8ef0ef71e5e6480d7f92868329 AS proxy
+FROM gcr.io/distroless/static-debian13:nonroot@sha256:aafe993665bf6200db38a02c11a9351e782a84b6a45e7f33b6695638c88e3931 AS proxy
 COPY --from=caddy-dist /usr/bin/caddy /usr/bin/caddy
 # Certificates and Caddy's state, owned by the non-root user.
 COPY --from=caddy-dist --chown=65532:65532 /state/data /data
@@ -96,7 +96,7 @@ COPY deploy/Caddyfile /etc/caddy/Caddyfile
 COPY deploy/caddy/ /etc/caddy/nullbin/
 
 # An API-only image: only Go source is needed to build this target.
-FROM gcr.io/distroless/static-debian13:nonroot@sha256:25ac8f0c3b2334a9eb05452266bd4697864a8c8ef0ef71e5e6480d7f92868329 AS backend
+FROM gcr.io/distroless/static-debian13:nonroot@sha256:aafe993665bf6200db38a02c11a9351e782a84b6a45e7f33b6695638c88e3931 AS backend
 COPY --from=api-build /out/nullbin /nullbin
 COPY --from=go-base --chown=65532:65532 /out/data /data
 ENV NULLBIN_LISTEN_ADDR=:8080 NULLBIN_DATA_DIR=/data NULLBIN_API_ONLY=true
@@ -107,7 +107,7 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 CMD ["/nu
 ENTRYPOINT ["/nullbin"]
 
 # --- runtime image (default target) ----------------------------------------
-FROM gcr.io/distroless/static-debian13:nonroot@sha256:25ac8f0c3b2334a9eb05452266bd4697864a8c8ef0ef71e5e6480d7f92868329
+FROM gcr.io/distroless/static-debian13:nonroot@sha256:aafe993665bf6200db38a02c11a9351e782a84b6a45e7f33b6695638c88e3931
 COPY --from=go /out/nullbin /nullbin
 COPY --from=go --chown=65532:65532 /out/data /data
 ENV NULLBIN_LISTEN_ADDR=:8080 \
