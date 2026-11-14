@@ -46,6 +46,9 @@
   <symbol id="i-new" viewBox="0 0 24 24"><path d="M14 3H6v18h12V7zM14 3v5h4M8 14h8M12 10v8"/></symbol>
   <symbol id="i-raw" viewBox="0 0 24 24"><path d="m8 7-5 5 5 5M16 7l5 5-5 5M14 4l-4 16"/></symbol>
   <symbol id="i-mail" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 6 9 7 9-7"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+  <symbol id="i-key" viewBox="0 0 24 24"><circle cx="8" cy="15" r="4"/><path d="M11 12l9-9M17 6l3 3M14.5 8.5l2 2"/></symbol>
+  <symbol id="i-users" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0M16 4.5a3.5 3.5 0 0 1 0 7M18 14a6.5 6.5 0 0 1 3.5 6"/></symbol>
   <symbol id="i-qr" viewBox="0 0 24 24"><path d="M3 3h6v6H3zM15 3h6v6h-6zM3 15h6v6H3zM15 15h3v3h3v3h-6zM12 3v9H3M12 15v6M15 12h6M21 12v3"/></symbol>
 </svg>
 
@@ -112,6 +115,14 @@
             <span id="burn-reads-unit">open</span>
           </div>
         </div>
+        <div class="nb-recipients-setting">
+          <label class="nb-check" title="Give each person their own link. You can see how often each was opened and revoke it on its own."><input id="recipients" class="form-check-input" type="checkbox" aria-describedby="recipients-help" aria-controls="recipients-field"><span>Separate links</span></label>
+          <div id="recipients-field" class="nb-toolbar-field nb-read-limit" hidden>
+            <label for="recipients-count" class="visually-hidden">Number of people</label>
+            <input id="recipients-count" class="form-control" type="number" min="2" max="20" step="1" value="2" inputmode="numeric" aria-describedby="recipients-count-help" disabled>
+            <span>people</span>
+          </div>
+        </div>
         <label class="nb-check" title="Allow encrypted comments from everyone who can open the paste."><input id="discussion" class="form-check-input" type="checkbox" aria-describedby="discussion-help">Discussion</label>
         <div class="nb-password-setting">
         <label class="nb-check" title="Readers need the password as well as the link. Send it separately."><input id="password-switch" class="form-check-input" type="checkbox" aria-describedby="password-help" aria-controls="password-row">Password</label>
@@ -119,6 +130,8 @@
           <label for="password" class="visually-hidden">Password</label>
           <div class="input-group has-validation">
             <input id="password" type="password" class="form-control" autocomplete="new-password" spellcheck="false" autocorrect="off" autocapitalize="off" placeholder="At least 8 characters" aria-describedby="password-error" aria-invalid="false">
+            <button id="password-generate" type="button" class="btn nb-btn-ghost" aria-label="Generate a strong password" title="Generate a strong random password"><svg class="nb-i" aria-hidden="true"><use href="#i-key"/></svg></button>
+            <button id="password-copy" type="button" class="btn nb-btn-ghost nb-copy-btn" aria-label="Copy password" title="Copy the password, to send it separately from the link"><svg class="nb-i" aria-hidden="true"><use href="#i-copy"/></svg></button>
             <button id="password-reveal" type="button" class="btn nb-btn-ghost" aria-pressed="false" aria-label="Show password"><svg class="nb-i" aria-hidden="true"><use href="#i-eye"/></svg></button>
             <div id="password-error" class="invalid-feedback">Use at least 8 characters.</div>
           </div>
@@ -134,6 +147,8 @@
       <span id="burn-help" class="visually-hidden">Delete the paste after the allowed number of authorized opens. Defaults to one open.</span>
       <span id="burn-reads-help" class="visually-hidden">Allow 1 to 1,000 authorized opens before deletion. Reloads and interrupted downloads count as opens.</span>
       <span id="password-help" class="visually-hidden">Readers need the password as well as the link. Send it separately.</span>
+      <span id="recipients-help" class="visually-hidden">Give each person their own link, with its own open count. The delete link can revoke each one. Cannot be combined with a discussion.</span>
+      <span id="recipients-count-help" class="visually-hidden">Make 2 to 20 separate links.</span>
       <span id="discussion-help" class="visually-hidden">Everyone who can open the paste can read and leave encrypted comments.</span>
 
       <div id="create-progress" class="nb-progress" hidden>
@@ -153,6 +168,7 @@
     <p id="result-copy-status" class="nb-note" role="status" hidden></p>
 
     <div class="nb-card nb-pad">
+      <div id="share-single">
       <p id="share-label" class="nb-eyebrow">Share link</p>
       <div class="nb-share-row">
         <p id="share-link" class="nb-link" aria-labelledby="share-label" tabindex="0"><span id="share-server" class="nb-link-server"></span><span id="share-key" class="nb-link-key"></span></p>
@@ -161,6 +177,12 @@
           <a id="result-email" class="btn nb-btn-secondary"><svg class="nb-i" aria-hidden="true"><use href="#i-mail"/></svg><span>Email</span></a>
           <button id="result-qr" type="button" class="btn nb-btn-secondary" aria-haspopup="dialog" aria-controls="qr-dialog"><svg class="nb-i" aria-hidden="true"><use href="#i-qr"/></svg><span>QR code</span></button>
         </div>
+      </div>
+      </div>
+      <div id="recipient-links" hidden>
+        <p class="nb-eyebrow">Separate links</p>
+        <p class="nb-muted">Send each link to one person only. Note who gets which number: the delete link shows how often each link was opened and can revoke it.</p>
+        <ol id="recipient-list" class="nb-recipient-list"></ol>
       </div>
       <ul class="nb-legend">
         <li><span class="nb-swatch nb-swatch-server" aria-hidden="true"></span>Sent to the server to find the paste</li>
@@ -198,7 +220,7 @@
     <div id="gate-burn" class="nb-gate" hidden>
       <div class="nb-gate-icon nb-tone-warn"><svg class="nb-i" aria-hidden="true"><use href="#i-flame"/></svg></div>
       <h2 id="burn-title" class="nb-gate-title" tabindex="-1">This paste burns after reading</h2>
-      <p class="nb-gate-text">Opening uses one of this paste’s allowed opens. It is deleted when the limit is reached. Interrupted downloads also count.</p>
+      <p id="burn-text" class="nb-gate-text">Opening uses one of this paste’s allowed opens. It is deleted when the limit is reached. Interrupted downloads also count.</p>
       <button id="burn-open" type="button" class="btn nb-btn-primary">Open paste</button>
     </div>
 
@@ -238,6 +260,7 @@
       <header class="nb-view-head">
         <p class="nb-eyebrow"><svg class="nb-i" aria-hidden="true"><use href="#i-lock"/></svg>Decrypted in this browser</p>
         <ul id="view-chips" class="nb-chips"></ul>
+        <p id="view-expires" class="nb-meta nb-countdown" hidden><svg class="nb-i" aria-hidden="true"><use href="#i-clock"/></svg><span id="view-expires-text"></span></p>
       </header>
       <p id="burned-note" class="nb-note nb-tone-warn" hidden><svg class="nb-i" aria-hidden="true"><use href="#i-flame"/></svg><span>This paste is now deleted from the server. Copy or save what you need before you leave this page.</span></p>
 
@@ -318,6 +341,12 @@
         <a href="/" class="btn nb-btn-secondary">Cancel</a>
         <button id="delete-confirm" type="button" class="btn nb-btn-danger"><span>Delete paste</span></button>
       </div>
+    </div>
+    <div id="recipients-manage" class="nb-card nb-pad nb-recipients-manage" aria-labelledby="recipients-title" hidden>
+      <h2 id="recipients-title" class="nb-h2">Separate links</h2>
+      <p class="nb-muted">Revoking a link stops it opening the paste from now on. Anyone who already opened it may have kept a copy. When every link is revoked or used up, the paste is deleted.</p>
+      <p id="recipients-error" class="nb-note nb-tone-danger" role="alert" hidden></p>
+      <ol id="recipient-status" class="nb-recipient-list"></ol>
     </div>
     <div id="delete-done" class="nb-gate" hidden>
       <div class="nb-gate-icon nb-tone-ok"><svg class="nb-i" aria-hidden="true"><use href="#i-check"/></svg></div>

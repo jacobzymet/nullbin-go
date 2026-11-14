@@ -5,7 +5,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { loadSodium } from '../src/sodium.ts';
-import { openPaste, preparePaste, type PasteInput } from '../src/crypto.ts';
+import { MAX_RECIPIENTS, burnAccessToken, deriveKey, discussionKeys, openPaste, preparePaste, recipientAccessToken, type PasteInput } from '../src/crypto.ts';
+import { generatePassword, GENERATED_PASSWORD_LENGTH } from '../src/create.ts';
 import {
   ABYTES,
   ByteReader,
@@ -23,9 +24,11 @@ import {
   encodeFrameLength,
   paddedLength,
   parseMeta,
+  parsePrefix,
+  PREFIX_BYTES,
   type PasteMeta,
 } from '../src/format.ts';
-import { encodeKeyFragment, encodeTokenFragment, parseKeyFragment, parseTokenFragment } from '../src/link.ts';
+import { encodeKeyFragment, encodeTokenFragment, parseDeleteFragment, parseKeyFragment, parseTokenFragment } from '../src/link.ts';
 
 const sodium = await loadSodium();
 
@@ -360,17 +363,91 @@ test('fragment encoding and strict parsing', () => {
   const burn = encodeKeyFragment(sodium, key, true);
   assert.match(plain, /^[A-Za-z0-9_-]{43}$/);
   assert.equal(burn, `${plain}.b`);
-  assert.deepEqual(parseKeyFragment(sodium, `#${plain}`), { key, burn: false });
-  assert.deepEqual(parseKeyFragment(sodium, burn), { key, burn: true });
-  for (const bad of ['', '#', plain.slice(1), `${plain}A`, `${plain}.x`, `${plain}.b.b`, `${plain}=`, plain.replace(/.$/, '/'), `${plain.slice(0, 42)}B`]) {
+  assert.deepEqual(parseKeyFragment(sodium, `#${plain}`), { key, burn: false, recipient: null });
+  assert.deepEqual(parseKeyFragment(sodium, burn), { key, burn: true, recipient: null });
+  const secret = sodium.randombytes_buf(16);
+  const r = sodium.to_base64(secret, sodium.base64_variants.URLSAFE_NO_PADDING);
+  assert.equal(encodeKeyFragment(sodium, key, false, secret), `${plain}.r${r}`);
+  assert.equal(encodeKeyFragment(sodium, key, true, secret), `${plain}.b.r${r}`);
+  assert.deepEqual(parseKeyFragment(sodium, `#${plain}.r${r}`), { key, burn: false, recipient: secret });
+  assert.deepEqual(parseKeyFragment(sodium, `${plain}.b.r${r}`), { key, burn: true, recipient: secret });
+  assert.throws(() => encodeKeyFragment(sodium, key, false, secret.subarray(1)));
+  const badSecrets = [`${plain}.r`, `${plain}.r${r}A`, `${plain}.r${r.slice(1)}`, `${plain}.r${r.replace(/.$/, 'B')}`, `${plain}.r${r}.b`, `${plain}.r${r}.r${r}`, `${plain}.b.b.r${r}`, `${plain}.R${r}`, `${plain}.r${r.replace(/^./, '+')}`, `${plain}.x.r${r}`];
+  for (const bad of ['', '#', plain.slice(1), `${plain}A`, `${plain}.x`, `${plain}.b.b`, `${plain}=`, plain.replace(/.$/, '/'), `${plain.slice(0, 42)}B`, ...badSecrets]) {
     assert.equal(parseKeyFragment(sodium, bad), null, `accepted ${bad}`);
   }
   assert.equal(parseTokenFragment(`#d.${plain}`), plain);
   assert.equal(parseTokenFragment(`#${plain}`), null, 'a bare key must never pass as a delete token');
   assert.equal(parseTokenFragment(`#${encodeTokenFragment(plain)}`), plain);
   assert.equal(parseTokenFragment(`#d.${plain}.b`), null);
+  assert.equal(encodeTokenFragment(plain, true), `d.${plain}.r`);
+  assert.deepEqual(parseDeleteFragment(`#d.${plain}.r`), { token: plain, recipients: true });
+  assert.deepEqual(parseDeleteFragment(`#d.${plain}`), { token: plain, recipients: false });
+  assert.equal(parseTokenFragment(`#d.${plain}.r`), plain);
+  for (const bad of [`#d.${plain}.r.r`, `#d.${plain}r`, `#d.${plain}.R`, `#d..r`, `#${plain}.r`]) assert.equal(parseDeleteFragment(bad), null, bad);
   assert.equal(parseTokenFragment('#short'), null);
   assert.equal(parseTokenFragment(`#${plain}<`), null);
+});
+
+test('separate links: one secret and token per link, all distinct and tied to the key and password', async () => {
+  const prepared = preparePaste(sodium, input({ password: 'correct horse', recipients: 3 }));
+  assert.equal(prepared.recipientSecrets.length, 3);
+  assert.equal(prepared.recipientTokens.length, 3);
+  assert.equal(new Set(prepared.recipientTokens).size, 3, 'tokens differ per link');
+  for (const t of prepared.recipientTokens) {
+    assert.match(t, /^[A-Za-z0-9_-]{43}$/);
+    assert.notEqual(t, prepared.burnToken);
+  }
+  for (const s of prepared.recipientSecrets) assert.equal(s.length, 16);
+  // A reader recomputes the token from the link key, the password and the
+  // link's own secret. Without the password, or with another link's secret,
+  // the token is different.
+  const head = (await prepared.chunks().next()).value!;
+  const { salt } = parsePrefix(head.subarray(0, PREFIX_BYTES));
+  const master = deriveKey(sodium, prepared.fragmentKey, 'correct horse', salt);
+  const noPassword = prepared.fragmentKey.slice();
+  for (let i = 0; i < 3; i++) {
+    assert.equal(recipientAccessToken(sodium, master, prepared.recipientSecrets[i]!), prepared.recipientTokens[i]);
+    assert.notEqual(recipientAccessToken(sodium, noPassword, prepared.recipientSecrets[i]!), prepared.recipientTokens[i]);
+  }
+  assert.notEqual(recipientAccessToken(sodium, master, prepared.recipientSecrets[0]!), prepared.recipientTokens[1]);
+  // Independent of every other key derived from the master key.
+  const others = [burnAccessToken(sodium, master), discussionKeys(sodium, master).token];
+  for (const t of prepared.recipientTokens) assert.ok(!others.includes(t));
+  assert.throws(() => recipientAccessToken(sodium, master, new Uint8Array(15)));
+  // A paste without separate links has none.
+  const plain = preparePaste(sodium, input());
+  assert.deepEqual([plain.recipientSecrets, plain.recipientTokens], [[], []]);
+});
+
+test('separate links need 2 to 20 people and no discussion', () => {
+  for (const recipients of [1, MAX_RECIPIENTS + 1, -1, 2.5, Number.NaN]) {
+    assert.throws(() => preparePaste(sodium, input({ recipients })), PasteError, String(recipients));
+  }
+  assert.throws(() => preparePaste(sodium, input({ recipients: 2, discussion: true })), PasteError);
+  assert.equal(preparePaste(sodium, input({ recipients: MAX_RECIPIENTS })).recipientTokens.length, MAX_RECIPIENTS);
+});
+
+test('generated passwords are long, from the readable alphabet, and unbiased', () => {
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789';
+  const seen = new Map<string, number>();
+  for (let i = 0; i < 2000; i++) {
+    const p = generatePassword();
+    assert.equal(p.length, GENERATED_PASSWORD_LENGTH);
+    for (const c of p) {
+      assert.ok(alphabet.includes(c), `unexpected character ${c}`);
+      seen.set(c, (seen.get(c) ?? 0) + 1);
+    }
+  }
+  assert.equal(seen.size, alphabet.length, 'every character appears');
+  // 40,000 characters: each of the 56 expected about 714 times.
+  for (const [c, n] of seen) assert.ok(n > 560 && n < 880, `${c} appeared ${n} times`);
+  // Bytes at or above the largest multiple of 56 (224) are skipped, never folded in.
+  let call = 0;
+  const p = generatePassword((b) => { b.fill(call++ === 0 ? 255 : 0); return b; });
+  assert.equal(p, 'A'.repeat(GENERATED_PASSWORD_LENGTH));
+  assert.equal(generatePassword((b) => b.fill(223)).length, GENERATED_PASSWORD_LENGTH);
+  assert.equal(generatePassword((b) => b.fill(223))[0], alphabet[223 % 56]);
 });
 
 test('a discussion works without a password, with keys from the link key alone', async () => {

@@ -11,7 +11,7 @@ import assert from 'node:assert/strict';
 import { buildThread, decryptComment, encryptComment, type Comment } from '../src/comments.ts';
 import { openPaste, preparePaste } from '../src/crypto.ts';
 import { ByteReader, PasteError, PREFIX_BYTES, parseMeta, parsePrefix } from '../src/format.ts';
-import { parseKeyFragment, parseTokenFragment } from '../src/link.ts';
+import { encodeKeyFragment, parseKeyFragment, parseTokenFragment } from '../src/link.ts';
 import { loadSodium } from '../src/sodium.ts';
 
 // xorshift32: small, fast and reproducible.
@@ -149,12 +149,18 @@ test('link fragments are accepted only in canonical form', async () => {
   const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.#=+/ %';
   for (let i = 0; i < 20_000; i++) {
     const len = r.int(4) === 0 ? 43 + r.int(3) : r.int(60);
-    const s = Array.from({ length: len }, () => alphabet[r.int(alphabet.length)]).join('');
+    let s = Array.from({ length: len }, () => alphabet[r.int(alphabet.length)]).join('');
+    // Often a real key, sometimes with burn and recipient parts, then mangled.
+    if (i % 3 === 0) {
+      s = encodeKeyFragment(sodium, r.bytes(32), r.int(2) === 0, r.int(2) === 0 ? r.bytes(16) : null);
+      if (r.int(2)) { const p = r.int(s.length); s = s.slice(0, p) + alphabet[r.int(alphabet.length)] + s.slice(p + r.int(2)); }
+      if (r.int(4) === 0) s = `#${s}`;
+    }
     const k = parseKeyFragment(sodium, s);
     if (k) {
       assert.equal(k.key.length, 32);
-      const body = s.replace(/^#/, '').replace(/\.b$/, '');
-      assert.equal(sodium.to_base64(k.key, sodium.base64_variants.URLSAFE_NO_PADDING), body);
+      // Accepted only in exactly the form encodeKeyFragment writes.
+      assert.equal(encodeKeyFragment(sodium, k.key, k.burn, k.recipient), s.replace(/^#/, ''));
     }
     const t = parseTokenFragment(s);
     if (t !== null) assert.match(t, /^[A-Za-z0-9_-]{43}$/);

@@ -377,7 +377,7 @@ func TestCreateValidation(t *testing.T) {
 		{"over max", "application/json", `{"expires_in":300,"burn_after_reading":false,"total_size":1048577}`, 413},
 		{"huge", "application/json", `{"expires_in":300,"burn_after_reading":false,"total_size":99999999999999999}`, 413},
 		{"overflow", "application/json", `{"expires_in":300,"burn_after_reading":false,"total_size":999999999999999999999}`, 400},
-		{"body too large", "application/json", `{"expires_in":300,"burn_after_reading":false,"total_size":100,"x":"` + strings.Repeat("a", 2000) + `"}`, 413},
+		{"body too large", "application/json", `{"expires_in":300,"burn_after_reading":false,"total_size":100,"x":"` + strings.Repeat("a", 5000) + `"}`, 413},
 	}
 	for _, c := range cases {
 		hdr := map[string]string{}

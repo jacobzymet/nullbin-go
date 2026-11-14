@@ -204,7 +204,7 @@ input.form-control, select.form-select { height: var(--nb-control-height); }
 .nb-toolbar-field label { white-space: nowrap; }
 .nb-toolbar-field .form-select { width: 128px; }
 .nb-read-limit .form-control { width: 84px; }
-.nb-burn-setting { display: inline-flex; align-items: center; gap: 8px; }
+.nb-burn-setting, .nb-recipients-setting { display: inline-flex; align-items: center; gap: 8px; }
 /* Options are pills: outlined when off, filled with the accent when on. */
 .nb-check { display: inline-flex; min-height: var(--nb-control-height); align-items: center; gap: 8px; padding-inline: 13px 16px; border: 1px solid var(--nb-line-strong); border-radius: var(--nb-pill); background: var(--nb-surface); white-space: nowrap; cursor: pointer; transition: background-color .12s, border-color .12s, color .12s; }
 .nb-check:hover { background: var(--nb-raised); }
@@ -215,7 +215,7 @@ input.form-control, select.form-select { height: var(--nb-control-height); }
 @media (prefers-reduced-motion: reduce) { .nb-check { transition: none; } }
 .nb-check input:disabled { pointer-events: none; }
 .nb-password-setting { display: flex; align-items: flex-start; gap: 8px; max-width: 100%; min-width: 0; }
-.nb-toolbar-password { width: 240px; max-width: 100%; }
+.nb-toolbar-password { width: 320px; max-width: 100%; }
 .nb-toolbar-password .invalid-feedback { flex-basis: 100%; font-size: 12px; }
 
 /* Expires is a pill too: its label, with the choice inset inside. The pill's
@@ -233,30 +233,38 @@ input.form-control, select.form-select { height: var(--nb-control-height); }
    outline moves from the toggle to the whole group, and the field sits
    inside as an inset rounded box. The 6px transparent borders keep every
    control at the shared height while drawing it smaller than the pill. */
-.nb-burn-setting, .nb-password-setting { transition: background-color .12s, box-shadow .12s; }
-@media (prefers-reduced-motion: reduce) { .nb-burn-setting, .nb-password-setting { transition: none; } }
+.nb-burn-setting, .nb-recipients-setting, .nb-password-setting { transition: background-color .12s, box-shadow .12s; }
+@media (prefers-reduced-motion: reduce) { .nb-burn-setting, .nb-recipients-setting, .nb-password-setting { transition: none; } }
 .nb-burn-setting:has(#burn:checked),
+.nb-recipients-setting:has(#recipients:checked),
 .nb-password-setting:has(#password-switch:checked) { gap: 0; border-radius: var(--nb-pill); background: var(--nb-accent-tint); box-shadow: inset 0 0 0 1px var(--nb-accent); }
-.nb-burn-setting:has(#burn:checked) { padding-right: 16px; }
+.nb-burn-setting:has(#burn:checked), .nb-recipients-setting:has(#recipients:checked) { padding-right: 16px; }
 .nb-burn-setting:has(#burn:checked) > .nb-check,
+.nb-recipients-setting:has(#recipients:checked) > .nb-check,
 .nb-password-setting:has(#password-switch:checked) > .nb-check { border-color: transparent; background: transparent; padding-right: 6px; }
-.nb-burn-setting:has(#burn:checked) .nb-read-limit { gap: 6px; color: var(--nb-ink); }
+.nb-burn-setting:has(#burn:checked) .nb-read-limit,
+.nb-recipients-setting:has(#recipients:checked) .nb-read-limit { gap: 6px; color: var(--nb-ink); }
 .nb-burn-setting:has(#burn:checked) #burn-reads,
+.nb-recipients-setting:has(#recipients:checked) #recipients-count,
 .nb-password-setting:has(#password-switch:checked) #password,
-.nb-password-setting:has(#password-switch:checked) #password-reveal { border: 6px solid transparent; border-radius: var(--nb-pill); background-clip: padding-box; padding-block: 0; box-shadow: none; }
+.nb-password-setting:has(#password-switch:checked) .btn { border: 6px solid transparent; border-radius: var(--nb-pill); background-clip: padding-box; padding-block: 0; box-shadow: none; }
 .nb-burn-setting:has(#burn:checked) #burn-reads,
+.nb-recipients-setting:has(#recipients:checked) #recipients-count,
 .nb-password-setting:has(#password-switch:checked) #password { background-color: var(--nb-surface); }
-.nb-burn-setting:has(#burn:checked) #burn-reads { width: 88px; padding-inline: 12px 6px; }
+.nb-burn-setting:has(#burn:checked) #burn-reads,
+.nb-recipients-setting:has(#recipients:checked) #recipients-count { width: 88px; padding-inline: 12px 6px; }
 /* The arrows that change the number stay visible, not only on hover, so
    the count reads as editable. (Phones show a number keyboard instead.) */
-#burn-reads::-webkit-inner-spin-button, #burn-reads::-webkit-outer-spin-button { opacity: 1; }
+#burn-reads::-webkit-inner-spin-button, #burn-reads::-webkit-outer-spin-button,
+#recipients-count::-webkit-inner-spin-button, #recipients-count::-webkit-outer-spin-button { opacity: 1; }
 /* Its inset border must not add to the button's height: the minimum height sets it. */
-.nb-password-setting:has(#password-switch:checked) #password-reveal { padding-block: 0; --bs-btn-bg: transparent; --bs-btn-hover-bg: var(--nb-surface); --bs-btn-active-bg: var(--nb-surface); }
+.nb-password-setting:has(#password-switch:checked) .btn { padding-block: 0; --bs-btn-bg: transparent; --bs-btn-hover-bg: var(--nb-surface); --bs-btn-active-bg: var(--nb-surface); }
 /* With an error message under the field, the pill becomes a rounded box. */
 .nb-password-setting:has(#password.is-invalid) { border-radius: calc(var(--nb-control-height) / 2); }
 .nb-burn-setting:has(#burn:checked) #burn-reads:focus,
+.nb-recipients-setting:has(#recipients:checked) #recipients-count:focus,
 .nb-password-setting:has(#password-switch:checked) #password:focus,
-.nb-password-setting:has(#password-switch:checked) #password-reveal:focus-visible { outline: 2px solid var(--nb-accent); outline-offset: -6px; }
+.nb-password-setting:has(#password-switch:checked) .btn:focus-visible { outline: 2px solid var(--nb-accent); outline-offset: -6px; }
 .nb-password-setting:has(#password-switch:checked) #password.is-invalid { outline: 2px solid var(--nb-danger); outline-offset: -6px; background-image: none; }
 .nb-password-setting:has(#password-switch:checked) .invalid-feedback { padding: 0 16px 8px; }
 .nb-toolbar-attachment { grid-area: attachment; position: relative; }
@@ -297,6 +305,15 @@ input.form-control, select.form-select { height: var(--nb-control-height); }
 .nb-swatch { width: 16px; height: 4px; border-radius: var(--nb-pill); }
 .nb-swatch-server { background: var(--nb-muted); }
 .nb-swatch-key { background: var(--nb-accent); }
+/* Separate links: one row per link, numbered so the sender can note who got which. */
+.nb-recipient-list { display: grid; gap: 8px; margin: 8px 0 14px; padding: 0; list-style: none; }
+.nb-recipient-list > li { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px; }
+.nb-recipient-list .nb-link { flex: 1 1 260px; min-width: 0; }
+.nb-recipient-list .btn { flex: none; }
+.nb-recipient-num { flex: none; min-width: 56px; padding-block: var(--nb-control-padding-y); font-weight: 600; }
+.nb-recipient-state { flex: 1 1 200px; padding-block: var(--nb-control-padding-y); color: var(--nb-muted); }
+.nb-recipients-manage { max-width: 720px; margin: 24px auto 0; }
+.nb-countdown { display: flex; align-items: center; gap: 6px; margin: 8px 0 0; font-variant-numeric: tabular-nums; }
 .nb-facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 8px 16px; margin: 0; }
 .nb-facts dt { font-weight: 500; }
 .nb-facts dd { margin: 0; }
@@ -433,8 +450,8 @@ input.form-control, select.form-select { height: var(--nb-control-height); }
      The open count wraps under Burn too when the row is too narrow; at one
      row the same radius still draws a pill. */
   .nb-password-setting:has(#password-switch:checked) { border-radius: calc(var(--nb-control-height) / 2); gap: 8px; }
-  .nb-burn-setting { flex-wrap: wrap; }
-  .nb-burn-setting:has(#burn:checked) { border-radius: calc(var(--nb-control-height) / 2); padding-right: 12px; }
+  .nb-burn-setting, .nb-recipients-setting { flex-wrap: wrap; }
+  .nb-burn-setting:has(#burn:checked), .nb-recipients-setting:has(#recipients:checked) { border-radius: calc(var(--nb-control-height) / 2); padding-right: 12px; }
   .nb-toolbar-settings > .nb-toolbar-field > label { min-width: 72px; }
 
   /* Attached files: one pill each, the name using the space it has. */

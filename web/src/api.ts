@@ -53,12 +53,26 @@ export interface Created {
   deleteToken: string;
 }
 
-/** Starts an upload. A comment token (derived from the key) enables a discussion. */
-export async function createPaste(expiresIn: number, burn: boolean, totalSize: number, commentToken: string | null, burnToken: string | null = null, maxReads = 1): Promise<Created> {
-  const body: Record<string, unknown> = { expires_in: expiresIn, burn_after_reading: burn, total_size: totalSize };
-  if (commentToken !== null) body['comment_token'] = commentToken;
-  if (burnToken !== null) body['burn_token'] = burnToken;
-  if (burn && maxReads !== 1) body['max_reads'] = maxReads;
+/** One separate recipient link at creation: its access token and open limit (null for none). */
+export interface RecipientRequest {
+  token: string;
+  maxReads: number | null;
+}
+
+/**
+ * Starts an upload. A comment token (derived from the key) enables a
+ * discussion. Recipient links replace the single burn token: the paste can
+ * then be opened only through one of them.
+ */
+export async function createPaste(expiresIn: number, burn: boolean, totalSize: number, commentToken: string | null, burnToken: string | null = null, maxReads = 1, recipients: readonly RecipientRequest[] | null = null): Promise<Created> {
+  const body: Record<string, unknown> = { expires_in: expiresIn, burn_after_reading: burn || recipients !== null, total_size: totalSize };
+  if (recipients !== null) {
+    body['recipients'] = recipients.map((r) => (r.maxReads === null ? { token: r.token } : { token: r.token, max_reads: r.maxReads }));
+  } else {
+    if (commentToken !== null) body['comment_token'] = commentToken;
+    if (burnToken !== null) body['burn_token'] = burnToken;
+    if (burn && maxReads !== 1) body['max_reads'] = maxReads;
+  }
   const resp = await fetch(apiURL('/api/v1/pastes'), {
     ...base, signal: AbortSignal.timeout(REQUEST_MS),
     method: 'POST',
@@ -134,8 +148,15 @@ export async function finalizePaste(id: string, uploadToken: string): Promise<Da
   return d && !Number.isNaN(d.getTime()) ? d : null;
 }
 
-/** Starts downloading a paste's ciphertext. */
-export async function fetchPaste(id: string, burnToken: string | null = null): Promise<{ body: ReadableStream<Uint8Array>; size: number; readsRemaining: number | null }> {
+/** The longest a paste can last (a month), with room for clock differences. */
+const MAX_EXPIRES_IN = 31 * 24 * 3600;
+
+/**
+ * Starts downloading a paste's ciphertext. With a token it opens a burn paste
+ * or a recipient link; `limited` says whether that link has an open limit
+ * (one without sends no count). expiresIn is the seconds left, if known.
+ */
+export async function fetchPaste(id: string, burnToken: string | null = null, limited = true, recipientLink = false): Promise<{ body: ReadableStream<Uint8Array>; size: number; readsRemaining: number | null; expiresIn: number | null }> {
   // Only the wait for the response to start is limited here; a download can
   // take long, and ByteReader fails one that stops arriving.
   const started = new AbortController();
@@ -152,16 +173,60 @@ export async function fetchPaste(id: string, burnToken: string | null = null): P
   if (resp.status !== 200 || !resp.body) throw await errorFrom(resp);
   const size = Number(resp.headers.get('Content-Length'));
   let readsRemaining: number | null = null;
-  if (burnToken !== null) {
+  if (burnToken !== null && limited) {
     const raw = resp.headers.get('Nullbin-Reads-Remaining');
-    // Older servers support only single-open burns and omit this header.
-    readsRemaining = raw === null ? 0 : Number(raw);
-    if ((raw !== null && !/^\d+$/.test(raw)) || !Number.isSafeInteger(readsRemaining) || readsRemaining < 0 || readsRemaining >= MAX_BURN_READS) {
+    // Older servers support only single-open burns and omit this header. A
+    // separate link without a limit (a server new enough to have them) never
+    // sends it, even if its link was edited to claim a limit.
+    readsRemaining = raw === null ? (recipientLink ? null : 0) : Number(raw);
+    if (readsRemaining !== null && ((raw !== null && !/^\d+$/.test(raw)) || !Number.isSafeInteger(readsRemaining) || readsRemaining < 0 || readsRemaining >= MAX_BURN_READS)) {
       await resp.body.cancel();
       throw new Error('The server sent an invalid read count.');
     }
   }
-  return { body: resp.body, size: Number.isSafeInteger(size) && size > 0 ? size : 0, readsRemaining };
+  const left = resp.headers.get('Nullbin-Expires-In');
+  const expiresIn = left !== null && /^\d{1,8}$/.test(left) && Number(left) <= MAX_EXPIRES_IN ? Number(left) : null;
+  return { body: resp.body, size: Number.isSafeInteger(size) && size > 0 ? size : 0, readsRemaining, expiresIn };
+}
+
+/** One recipient link as its owner sees it. */
+export interface RecipientState {
+  opens: number;
+  /** null: no limit. */
+  maxOpens: number | null;
+  revoked: boolean;
+}
+
+/** The state of each separate link, for the holder of the delete token. */
+export async function fetchRecipients(id: string, deleteToken: string): Promise<RecipientState[]> {
+  const resp = await fetch(apiURL(`/api/v1/pastes/${id}/recipients`), {
+    ...base, signal: AbortSignal.timeout(REQUEST_MS),
+    method: 'GET',
+    headers: { 'Nullbin-Delete-Token': deleteToken },
+  });
+  if (resp.status !== 200) throw await errorFrom(resp);
+  const v = (await resp.json()) as Record<string, unknown>;
+  const list = v['recipients'];
+  if (!Array.isArray(list) || list.length < 2 || list.length > 20) throw new Error('The server sent an invalid response.');
+  const count = (n: unknown) => typeof n === 'number' && Number.isSafeInteger(n) && n >= 0;
+  return list.map((item: unknown) => {
+    const r = (typeof item === 'object' && item !== null ? item : {}) as Record<string, unknown>;
+    const { opens, max_opens: max, revoked } = r;
+    if (!count(opens) || !(max === null || (count(max) && (max as number) >= 1 && (max as number) <= MAX_BURN_READS)) || typeof revoked !== 'boolean') {
+      throw new Error('The server sent an invalid response.');
+    }
+    return { opens: opens as number, maxOpens: max as number | null, revoked };
+  });
+}
+
+/** Closes separate link n (counting from 0) for good. */
+export async function revokeRecipient(id: string, deleteToken: string, n: number): Promise<void> {
+  const resp = await fetch(apiURL(`/api/v1/pastes/${id}/recipients/${n}/revoke`), {
+    ...base, signal: AbortSignal.timeout(REQUEST_MS),
+    method: 'POST',
+    headers: { 'Nullbin-Delete-Token': deleteToken },
+  });
+  if (resp.status !== 204) throw await errorFrom(resp);
 }
 
 /** Only the public format prefix is exposed before authorizing a burn. */

@@ -78,7 +78,7 @@ func cors(frontend string, next http.Handler) http.Handler {
 			w.Header().Set("Access-Control-Max-Age", "600")
 		}
 		w.Header().Set("Access-Control-Allow-Origin", frontend)
-		w.Header().Set("Access-Control-Expose-Headers", "Content-Length, Retry-After, Nullbin-Reads-Remaining")
+		w.Header().Set("Access-Control-Expose-Headers", "Content-Length, Retry-After, Nullbin-Reads-Remaining, Nullbin-Expires-In")
 		if preflight {
 			w.WriteHeader(http.StatusNoContent)
 			return

@@ -12,6 +12,13 @@
 //     comment key       context "nbcmtenc"  encrypts comments (comments.ts)
 //     comment token     context "nbcmtacc"  sent to the server; its hash gates
 //                                           reading and posting comments
+//     burn token        context "nbburnac"  sent to the server; its hash gates
+//                                           opening a burn paste
+//     recipient key     context "nbrcptac"  never sent; keys the recipient tokens
+//   Separate links: each recipient link carries its own 16 random bytes, and
+//   its token is BLAKE2b-256(key = recipient key, message = those bytes). A
+//   token needs both the link and any password, and a recipient who knows the
+//   key but not another link's bytes cannot compute that link's token.
 // Encryption: crypto_secretstream_xchacha20poly1305 (see format.ts). New
 // pastes are padded (format version 2) so their size reveals only a range.
 
@@ -51,6 +58,8 @@ export interface PasteInput {
   password: string;
   /** Let readers comment. With a password, only readers who know it can. */
   discussion: boolean;
+  /** Number of separate recipient links (2 to MAX_RECIPIENTS), or 0 for one shared link. */
+  recipients?: number;
 }
 
 export interface PreparedPaste {
@@ -62,6 +71,10 @@ export interface PreparedPaste {
   commentToken: string | null;
   /** Separate capability derived from the master key; only used for burn pastes. */
   burnToken: string;
+  /** One secret per recipient link, for its URL fragment. Never sent to the server. */
+  recipientSecrets: Uint8Array[];
+  /** The access token of each recipient link, in the same order; sent to the server. */
+  recipientTokens: string[];
   /** Produces the blob. Call once. */
   chunks: () => AsyncGenerator<Uint8Array, void, undefined>;
 }
@@ -81,6 +94,26 @@ function subkey(sodium: Sodium, master: Uint8Array, context: string): Uint8Array
 /** Authorizes consuming a burn paste without disclosing an encryption key. */
 export function burnAccessToken(sodium: Sodium, master: Uint8Array): string {
   const bytes = subkey(sodium, master, 'nbburnac');
+  const token = sodium.to_base64(bytes, sodium.base64_variants.URLSAFE_NO_PADDING);
+  sodium.memzero(bytes);
+  return token;
+}
+
+/** Fewest and most separate recipient links a paste can have. */
+export const MIN_RECIPIENTS = 2;
+export const MAX_RECIPIENTS = 20;
+/** Length of the secret that each recipient link carries. */
+export const RECIPIENT_SECRET_BYTES = 16;
+
+/**
+ * Authorizes opening a paste through one recipient link. It needs the master
+ * key (the link key and any password) and that link's own secret.
+ */
+export function recipientAccessToken(sodium: Sodium, master: Uint8Array, secret: Uint8Array): string {
+  if (secret.length !== RECIPIENT_SECRET_BYTES) throw new Error('bad recipient secret');
+  const key = subkey(sodium, master, 'nbrcptac');
+  const bytes = sodium.crypto_generichash(KEY_BYTES, secret, key);
+  sodium.memzero(key);
   const token = sodium.to_base64(bytes, sodium.base64_variants.URLSAFE_NO_PADDING);
   sodium.memzero(bytes);
   return token;
@@ -124,6 +157,10 @@ export function preparePaste(sodium: Sodium, input: PasteInput): PreparedPaste {
   const hasFile = input.file !== null;
   if (!hasFile && input.text.length === 0) throw new PasteError('format', 'Add some text or attach a file first.');
   const hasPassword = input.password.length > 0;
+  const recipients = input.recipients ?? 0;
+  if (recipients !== 0 && (!Number.isSafeInteger(recipients) || recipients < MIN_RECIPIENTS || recipients > MAX_RECIPIENTS || input.discussion)) {
+    throw new PasteError('format', `Separate links need ${MIN_RECIPIENTS} to ${MAX_RECIPIENTS} people, and no discussion.`);
+  }
   const filename = hasFile ? (input.filename || 'file').slice(0, MAX_FILENAME_LENGTH) : null;
   const mime = hasFile && input.mime ? input.mime.slice(0, MAX_MIME_LENGTH) : null;
   const meta: PasteMeta = {
@@ -148,6 +185,8 @@ export function preparePaste(sodium: Sodium, input: PasteInput): PreparedPaste {
   const master = hasPassword ? deriveKey(sodium, fragmentKey, input.password, salt) : fragmentKey.slice();
   const streamKey = subkey(sodium, master, 'nbstream');
   const burnToken = burnAccessToken(sodium, master);
+  const recipientSecrets = Array.from({ length: recipients }, () => sodium.randombytes_buf(RECIPIENT_SECRET_BYTES));
+  const recipientTokens = recipientSecrets.map((secret) => recipientAccessToken(sodium, master, secret));
   let commentToken: string | null = null;
   if (input.discussion) {
     const d = discussionKeys(sodium, master);
@@ -224,7 +263,7 @@ export function preparePaste(sodium: Sodium, input: PasteInput): PreparedPaste {
     }
   }
 
-  return { fragmentKey, totalSize: blobSize(padded), commentToken, burnToken, chunks };
+  return { fragmentKey, totalSize: blobSize(padded), commentToken, burnToken, recipientSecrets, recipientTokens, chunks };
 }
 
 export interface OpenedPaste {

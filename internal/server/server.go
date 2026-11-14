@@ -31,7 +31,7 @@ const (
 	// not parse the format, so it accepts any size from here.
 	MinBlobSize = 46 + 4 + 17
 
-	maxCreateBody = 1 << 10               // bounded create JSON, including tokens and max_reads
+	maxCreateBody = 4 << 10               // bounded create JSON, including up to 20 recipient tokens
 	maxChunkBody  = storage.MaxChunkBytes // one upload chunk (the browser sends 4 MiB)
 	maxChunkIndex = 1<<31 - 1
 )
@@ -74,6 +74,9 @@ const (
 	CommentTokenHeader   = "Nullbin-Comment-Token"
 	BurnTokenHeader      = "Nullbin-Burn-Token"
 	ReadsRemainingHeader = "Nullbin-Reads-Remaining"
+	// ExpiresInHeader is the number of seconds until a downloaded paste
+	// expires, so the reader's countdown does not depend on their clock.
+	ExpiresInHeader = "Nullbin-Expires-In"
 )
 
 // Expiries are fixed in code. "1m" is one month (30 days). There is no
@@ -175,6 +178,8 @@ func New(cfg Config) *Server {
 	mux.Handle("GET /api/v1/pastes/{id}/prefix", s.route(0, s.downloads, s.handleBurnPrefix))
 	mux.Handle("POST /api/v1/pastes/{id}/read", s.route(0, s.downloads, s.handleReadBurn))
 	mux.Handle("DELETE /api/v1/pastes/{id}", s.route(0, s.deletes, s.handleDelete))
+	mux.Handle("GET /api/v1/pastes/{id}/recipients", s.route(0, s.deletes, s.handleRecipients))
+	mux.Handle("POST /api/v1/pastes/{id}/recipients/{n}/revoke", s.route(0, s.deletes, s.handleRevoke))
 	mux.Handle("POST /api/v1/pastes/{id}/comments", s.route(storage.MaxCommentBytes, s.comments, s.handleAddComment))
 	mux.Handle("GET /api/v1/pastes/{id}/comments", s.route(0, s.downloads, s.handleComments))
 	mux.Handle("GET /api/v1/version", s.route(0, s.pages, s.handleVersion))
@@ -306,6 +311,15 @@ type createRequest struct {
 	CommentToken *string `json:"comment_token"`
 	BurnToken    *string `json:"burn_token"`
 	MaxReads     *int    `json:"max_reads"`
+	// Recipients, if present, gives the paste one separate link per
+	// recipient instead of a single burn token. Each entry carries the
+	// token the browser derived for that link and an optional open limit.
+	Recipients *[]recipientRequest `json:"recipients"`
+}
+
+type recipientRequest struct {
+	Token    *string `json:"token"`
+	MaxReads *int    `json:"max_reads"`
 }
 
 type createResponse struct {
@@ -369,11 +383,19 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	var recipients []storage.NewRecipient
+	if req.Recipients != nil {
+		var ok bool
+		if recipients, ok = parseRecipients(req); !ok {
+			writeError(w, http.StatusBadRequest, "recipients requires burn_after_reading, no burn_token, max_reads or comment_token, and 2 to 20 entries, each a distinct 43-character base64url token with an optional max_reads from 1 to 1000")
+			return
+		}
+	}
 	burnToken := ""
 	if req.BurnToken != nil {
 		burnToken = *req.BurnToken
 	}
-	if (*req.BurnAfterReading && !validToken(burnToken)) || (!*req.BurnAfterReading && req.BurnToken != nil) {
+	if recipients == nil && ((*req.BurnAfterReading && !validToken(burnToken)) || (!*req.BurnAfterReading && req.BurnToken != nil)) {
 		writeError(w, http.StatusBadRequest, "burn_token is required only for burn-after-reading pastes and must be 43 base64url characters")
 		return
 	}
@@ -399,7 +421,13 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "too many unfinished uploads")
 		return
 	}
-	c, err := s.cfg.Store.CreatePendingWithReadLimit(expires, *req.BurnAfterReading, *req.TotalSize, commentToken, burnToken, reads)
+	var c storage.Created
+	var err error
+	if recipients != nil {
+		c, err = s.cfg.Store.CreatePendingWithRecipients(expires, *req.TotalSize, recipients)
+	} else {
+		c, err = s.cfg.Store.CreatePendingWithReadLimit(expires, *req.BurnAfterReading, *req.TotalSize, commentToken, burnToken, reads)
+	}
 	if err != nil {
 		s.pending.cancel(ip)
 	}
@@ -579,6 +607,12 @@ func (s *Server) download(w http.ResponseWriter, r *http.Request, burn bool) {
 		writeError(w, http.StatusNotFound, "not found")
 		return
 	}
+	if errors.Is(err, storage.ErrLinkClosed) {
+		// Only for the link's own token: tells its holder that retrying,
+		// with another password say, cannot help.
+		writeError(w, http.StatusGone, "this link was revoked or has used all its opens")
+		return
+	}
 	if err != nil {
 		s.internalError(w, "get", err)
 		return
@@ -594,10 +628,23 @@ func (s *Server) download(w http.ResponseWriter, r *http.Request, burn bool) {
 	h.Set("Content-Length", strconv.FormatInt(p.Meta.Size, 10))
 	if burn {
 		remaining := 0
-		if p.Meta.ReadLimit > 1 {
+		limited := true
+		if p.Link >= 0 {
+			// A recipient link reports only its own opens; one without a
+			// limit sends no count.
+			r := p.Meta.Recipients[p.Link]
+			remaining, limited = r.ReadLimit-r.ReadsUsed, r.ReadLimit > 0
+		} else if p.Meta.ReadLimit > 1 {
 			remaining = p.Meta.ReadLimit - p.Meta.ReadsUsed
 		}
-		h.Set(ReadsRemainingHeader, strconv.Itoa(remaining))
+		if limited {
+			h.Set(ReadsRemainingHeader, strconv.Itoa(remaining))
+		}
+	}
+	if left := p.Meta.ExpiresAt.Sub(s.nowFunc()); left > 0 {
+		h.Set(ExpiresInHeader, strconv.FormatInt(int64(left/time.Second), 10))
+	} else {
+		h.Set(ExpiresInHeader, "0")
 	}
 	w.WriteHeader(http.StatusOK)
 	// The context also bounds time spent waiting for bandwidth, which a
@@ -745,6 +792,95 @@ func (s *Server) handleComments(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not found")
 	default:
 		s.internalError(w, "comments", err)
+	}
+}
+
+// parseRecipients validates a create request's recipient links. They need
+// an access-controlled paste and replace its single burn token, open limit
+// and discussion.
+func parseRecipients(req createRequest) ([]storage.NewRecipient, bool) {
+	list := *req.Recipients
+	if !*req.BurnAfterReading || req.BurnToken != nil || req.MaxReads != nil || req.CommentToken != nil ||
+		len(list) < storage.MinRecipients || len(list) > storage.MaxRecipients {
+		return nil, false
+	}
+	out := make([]storage.NewRecipient, len(list))
+	seen := make(map[string]bool, len(list))
+	for i, r := range list {
+		if r.Token == nil || !validToken(*r.Token) || seen[*r.Token] {
+			return nil, false
+		}
+		seen[*r.Token] = true
+		limit := 0
+		if r.MaxReads != nil {
+			if *r.MaxReads < 1 || *r.MaxReads > storage.MaxBurnReads {
+				return nil, false
+			}
+			limit = *r.MaxReads
+		}
+		out[i] = storage.NewRecipient{Token: *r.Token, ReadLimit: limit}
+	}
+	return out, true
+}
+
+type recipientStatus struct {
+	Opens    int  `json:"opens"`
+	MaxOpens *int `json:"max_opens"`
+	Revoked  bool `json:"revoked"`
+}
+
+// handleRecipients shows the owner (the delete token holder) how often each
+// recipient link has been opened, and which are revoked.
+func (s *Server) handleRecipients(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET")
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	list, err := s.cfg.Store.Recipients(r.PathValue("id"), r.Header.Get(DeleteTokenHeader))
+	if errors.Is(err, storage.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	if err != nil {
+		s.internalError(w, "recipients", err)
+		return
+	}
+	out := make([]recipientStatus, len(list))
+	for i, l := range list {
+		out[i] = recipientStatus{Opens: l.ReadsUsed, Revoked: l.Revoked}
+		if l.ReadLimit > 0 {
+			limit := l.ReadLimit
+			out[i].MaxOpens = &limit
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"recipients": out})
+}
+
+// handleRevoke closes one recipient link for good. Recipient numbers start
+// at 0, in the order the links were created.
+func (s *Server) handleRevoke(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	n, ok := parseChunkIndex(r.PathValue("n"))
+	if !storage.ValidID(id) || !ok || n >= storage.MaxRecipients {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	release, ok := s.writeSlot(w, r)
+	if !ok {
+		return
+	}
+	defer release()
+	err := s.cfg.Store.Revoke(id, r.Header.Get(DeleteTokenHeader), n)
+	switch {
+	case err == nil:
+		w.WriteHeader(http.StatusNoContent)
+	case errors.Is(err, storage.ErrNotFound):
+		writeError(w, http.StatusNotFound, "not found")
+	case errors.Is(err, storage.ErrConflict):
+		writeError(w, http.StatusConflict, "paste busy, try again")
+	default:
+		s.internalError(w, "revoke", err)
 	}
 }
 

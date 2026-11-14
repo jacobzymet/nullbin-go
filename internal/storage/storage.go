@@ -81,6 +81,13 @@ const MaxChunkBytes = 8 << 20
 // MaxBurnReads bounds the configurable number of authorized opens.
 const MaxBurnReads = 1000
 
+// Separate links: a paste can have one access link per recipient, each
+// with its own token, open count and revocation.
+const (
+	MinRecipients = 2
+	MaxRecipients = 20
+)
+
 // Discussion limits.
 const (
 	// MaxComments is the most comments one paste can hold.
@@ -115,6 +122,10 @@ var (
 	// is not served, and never deleted for that reason. It matches
 	// ErrNotFound with errors.Is.
 	ErrNewerFormat = fmt.Errorf("written by a newer version: %w", ErrNotFound)
+	// ErrLinkClosed means a recipient link's own token matched, but that
+	// link was revoked or has used all its opens. Only a holder of the link
+	// learns this; any other token gets ErrNotFound.
+	ErrLinkClosed = errors.New("this link was revoked or has used all its opens")
 	// ErrNotErased means a paste was taken out of service, but its files
 	// could not all be removed yet. The sweeper keeps trying.
 	ErrNotErased = errors.New("removed from service, but its files could not be erased yet")
@@ -143,6 +154,38 @@ type Meta struct {
 	BurnTokenHash    string    `json:"burn_token_sha256,omitempty"`
 	ReadLimit        int       `json:"read_limit,omitempty"`
 	ReadsUsed        int       `json:"reads_used,omitempty"`
+	// Recipients, when present, replaces the single burn token: each
+	// recipient's link has its own token, open limit and count. Such a
+	// paste is access-controlled (Burn is set) and has no discussion.
+	Recipients []Recipient `json:"recipients,omitempty"`
+}
+
+// Recipient is one separate access link of a paste. ReadLimit 0 means the
+// link opens any number of times until the paste expires.
+type Recipient struct {
+	TokenHash string `json:"token_sha256"`
+	ReadLimit int    `json:"read_limit,omitempty"`
+	ReadsUsed int    `json:"reads_used,omitempty"`
+	Revoked   bool   `json:"revoked,omitempty"`
+}
+
+// closed reports whether this link can no longer open the paste.
+func (r Recipient) closed() bool {
+	return r.Revoked || (r.ReadLimit > 0 && r.ReadsUsed >= r.ReadLimit)
+}
+
+// NewRecipient is a recipient link requested at creation: the token the
+// browser derived for it, and its open limit (0 for none).
+type NewRecipient struct {
+	Token     string
+	ReadLimit int
+}
+
+// RecipientStatus is what the paste's owner may see about one link.
+type RecipientStatus struct {
+	ReadLimit int
+	ReadsUsed int
+	Revoked   bool
 }
 
 // upload is the state of a pending upload. It is deleted on finalize.
@@ -159,6 +202,7 @@ type upload struct {
 	CommentTokenHash string        `json:"comment_token_sha256,omitempty"`
 	BurnTokenHash    string        `json:"burn_token_sha256,omitempty"`
 	ReadLimit        int           `json:"read_limit,omitempty"`
+	Recipients       []Recipient   `json:"recipients,omitempty"`
 }
 
 // Store is a filesystem-backed paste store. It is safe for concurrent use.
@@ -327,6 +371,39 @@ func (s *Store) CreatePendingWithReadLimit(expiresIn time.Duration, burn bool, t
 	if (burn && burnToken == "") || (!burn && burnToken != "") {
 		return Created{}, errors.New("invalid burn capability")
 	}
+	u := upload{Burn: burn, ReadLimit: reads}
+	if burnToken != "" {
+		u.BurnTokenHash = HashToken(burnToken)
+	}
+	if commentToken != "" {
+		u.CommentTokenHash = HashToken(commentToken)
+	}
+	return s.createPending(expiresIn, totalSize, u)
+}
+
+// CreatePendingWithRecipients starts an upload whose paste can be opened
+// only through one of the given recipient links. Each link has its own
+// token and open limit, and the owner can revoke it with the delete token.
+func (s *Store) CreatePendingWithRecipients(expiresIn time.Duration, totalSize int64, recipients []NewRecipient) (Created, error) {
+	if expiresIn <= 0 || totalSize <= 0 || len(recipients) < MinRecipients || len(recipients) > MaxRecipients {
+		return Created{}, errors.New("invalid upload parameters")
+	}
+	u := upload{Burn: true, Recipients: make([]Recipient, len(recipients))}
+	for i, r := range recipients {
+		if r.Token == "" || r.ReadLimit < 0 || r.ReadLimit > MaxBurnReads {
+			return Created{}, errors.New("invalid recipient")
+		}
+		u.Recipients[i] = Recipient{TokenHash: HashToken(r.Token), ReadLimit: r.ReadLimit}
+	}
+	if !validRecipients(u.Recipients) {
+		return Created{}, errors.New("invalid recipient")
+	}
+	return s.createPending(expiresIn, totalSize, u)
+}
+
+// createPending reserves storage and writes a new upload with the access
+// settings already in u.
+func (s *Store) createPending(expiresIn time.Duration, totalSize int64, u upload) (Created, error) {
 	c := Created{ID: NewID(), UploadToken: NewToken(), DeleteToken: NewToken()}
 	dir := path.Join(dirPending, c.ID)
 	if !s.lock(c.ID) {
@@ -346,21 +423,11 @@ func (s *Store) CreatePendingWithReadLimit(expiresIn time.Duration, burn bool, t
 		s.quotaMu.Unlock()
 		return Created{}, err
 	}
-	u := upload{
-		CreatedAt:       s.now().UTC(),
-		ExpiresIn:       expiresIn,
-		Burn:            burn,
-		ReadLimit:       reads,
-		TotalSize:       totalSize,
-		UploadTokenHash: HashToken(c.UploadToken),
-		DeleteTokenHash: HashToken(c.DeleteToken),
-	}
-	if burnToken != "" {
-		u.BurnTokenHash = HashToken(burnToken)
-	}
-	if commentToken != "" {
-		u.CommentTokenHash = HashToken(commentToken)
-	}
+	u.CreatedAt = s.now().UTC()
+	u.ExpiresIn = expiresIn
+	u.TotalSize = totalSize
+	u.UploadTokenHash = HashToken(c.UploadToken)
+	u.DeleteTokenHash = HashToken(c.DeleteToken)
 	err = s.writeJSON(dir, fileUpload, u)
 	if err == nil {
 		var f *os.File
@@ -520,6 +587,7 @@ func (s *Store) Finalize(id, uploadToken string) (Meta, error) {
 		DeleteTokenHash:  u.DeleteTokenHash,
 		CommentTokenHash: u.CommentTokenHash,
 		BurnTokenHash:    u.BurnTokenHash,
+		Recipients:       u.Recipients,
 	}
 	if u.ReadLimit > 1 {
 		m.ReadLimit = u.ReadLimit // keep the one-open metadata format minimal
@@ -557,6 +625,8 @@ func (s *Store) Finalize(id, uploadToken string) (Meta, error) {
 // be called; it releases storage accounting and cleans up exhausted pastes.
 type Paste struct {
 	Meta Meta
+	// Link is the index of the recipient link that opened the paste, or -1.
+	Link int
 	f    *os.File
 	done func()
 }
@@ -591,7 +661,7 @@ func (s *Store) BurnPrefix(id string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if !m.Burn || m.BurnTokenHash == "" || s.expired(m) || exhausted(m) {
+	if !m.Burn || (m.BurnTokenHash == "" && len(m.Recipients) == 0) || s.expired(m) || exhausted(m) {
 		return nil, ErrNotFound
 	}
 	p, err := s.openUnclaimed(dir, m)
@@ -622,7 +692,7 @@ func (s *Store) openUnclaimed(dir string, m Meta) (*Paste, error) {
 		return nil, err
 	}
 	a.readers++
-	return &Paste{Meta: m, f: f, done: func() {
+	return &Paste{Meta: m, Link: -1, f: f, done: func() {
 		s.quotaMu.Lock()
 		defer s.quotaMu.Unlock()
 		a.readers--
@@ -647,7 +717,18 @@ func (s *Store) get(id, token string, consume bool) (*Paste, error) {
 	}
 
 	if m.Burn {
-		if !consume || exhausted(m) || !TokenMatches(m.BurnTokenHash, token) {
+		if !consume || exhausted(m) {
+			return nil, ErrNotFound
+		}
+		if len(m.Recipients) > 0 {
+			// Only a request with one of the links' tokens waits for the
+			// reservation lock; readLimited checks again under it.
+			if matchRecipient(m.Recipients, token) < 0 {
+				return nil, ErrNotFound
+			}
+			return s.readLimited(id, token) // always counted, per link
+		}
+		if !TokenMatches(m.BurnTokenHash, token) {
 			return nil, ErrNotFound
 		}
 		if m.ReadLimit > 1 {
@@ -683,7 +764,7 @@ func (s *Store) get(id, token string, consume bool) (*Paste, error) {
 		done()
 		return nil, err
 	}
-	return &Paste{Meta: m, f: f, done: done}, nil
+	return &Paste{Meta: m, Link: -1, f: f, done: done}, nil
 }
 
 // readLimited commits one open before returning any ciphertext. The counter
@@ -701,19 +782,46 @@ func (s *Store) readLimited(id, token string) (*Paste, error) {
 	if err != nil {
 		return nil, err
 	}
-	if !m.Burn || s.expired(m) || exhausted(m) || !TokenMatches(m.BurnTokenHash, token) {
+	if !m.Burn || s.expired(m) || exhausted(m) {
+		return nil, ErrNotFound
+	}
+	link := -1
+	if len(m.Recipients) > 0 {
+		link = matchRecipient(m.Recipients, token)
+		if link < 0 {
+			return nil, ErrNotFound
+		}
+		if m.Recipients[link].closed() {
+			return nil, ErrLinkClosed
+		}
+	} else if !TokenMatches(m.BurnTokenHash, token) {
 		return nil, ErrNotFound
 	}
 	p, err := s.openUnclaimed(dir, m)
 	if err != nil {
 		return nil, err
 	}
-	m.ReadsUsed++
-	if err := s.writeJSON(dir, fileMeta, m); err != nil {
-		p.Close()
-		return nil, err // never deliver bytes without a durable reservation
+	write := true
+	if link >= 0 {
+		// A link without a limit needs no reservation; its count is only for
+		// the owner, and stops at MaxBurnReads so its holder cannot make the
+		// server write to disk without end.
+		if r := &m.Recipients[link]; r.ReadLimit > 0 || r.ReadsUsed < MaxBurnReads {
+			r.ReadsUsed++
+		} else {
+			write = false
+		}
+	} else {
+		m.ReadsUsed++
+	}
+	if write {
+		if err := s.writeJSON(dir, fileMeta, m); err != nil {
+			p.Close()
+			return nil, err // never deliver bytes without a durable reservation
+		}
 	}
 	p.Meta = m
+	p.Link = link
 	closed := p.done
 	p.done = func() {
 		closed()
@@ -731,7 +839,121 @@ func validReadLimit(burn bool, reads int) bool {
 	return (burn && reads >= 1 && reads <= MaxBurnReads) || (!burn && reads == 0)
 }
 
-func exhausted(m Meta) bool { return m.Burn && m.ReadsUsed >= m.ReadLimit }
+func exhausted(m Meta) bool {
+	if len(m.Recipients) > 0 {
+		for _, r := range m.Recipients {
+			if !r.closed() {
+				return false
+			}
+		}
+		return true
+	}
+	return m.Burn && m.ReadsUsed >= m.ReadLimit
+}
+
+// matchRecipient returns the index of the link whose token matches, or -1.
+// Every link is compared in constant time, so timing does not reveal which
+// one matched.
+func matchRecipient(rs []Recipient, token string) int {
+	found := -1
+	for i, r := range rs {
+		if TokenMatches(r.TokenHash, token) && found < 0 {
+			found = i
+		}
+	}
+	return found
+}
+
+// validRecipients checks a paste's recipient links: a sensible number,
+// well-formed distinct token hashes, and counts within their limits.
+func validRecipients(rs []Recipient) bool {
+	if len(rs) < MinRecipients || len(rs) > MaxRecipients {
+		return false
+	}
+	seen := make(map[string]bool, len(rs))
+	for _, r := range rs {
+		b, err := hex.DecodeString(r.TokenHash)
+		if err != nil || len(b) != sha256.Size || r.TokenHash != hex.EncodeToString(b) || seen[r.TokenHash] {
+			return false
+		}
+		seen[r.TokenHash] = true
+		if r.ReadLimit < 0 || r.ReadLimit > MaxBurnReads || r.ReadsUsed < 0 || (r.ReadLimit > 0 && r.ReadsUsed > r.ReadLimit) {
+			return false
+		}
+	}
+	return true
+}
+
+// validAccess checks the access settings that uploads and pastes share.
+func validAccess(burn bool, burnTokenHash, commentTokenHash string, readLimit, readsUsed int, recipients []Recipient) bool {
+	if recipients != nil {
+		return burn && burnTokenHash == "" && commentTokenHash == "" && readLimit == 0 && readsUsed == 0 && validRecipients(recipients)
+	}
+	return validReadLimit(burn, readLimit) && readsUsed >= 0 && readsUsed <= readLimit && !(burn && commentTokenHash != "")
+}
+
+// Recipients returns the state of each recipient link, in order, to the
+// holder of the delete token.
+func (s *Store) Recipients(id, deleteToken string) ([]RecipientStatus, error) {
+	if !ValidID(id) {
+		return nil, ErrNotFound
+	}
+	dir := path.Join(dirPastes, id)
+	m, err := s.readMeta(dir, id)
+	if err != nil {
+		return nil, err
+	}
+	if !TokenMatches(m.DeleteTokenHash, deleteToken) || len(m.Recipients) == 0 || s.expired(m) || exhausted(m) {
+		return nil, ErrNotFound
+	}
+	out := make([]RecipientStatus, len(m.Recipients))
+	for i, r := range m.Recipients {
+		out[i] = RecipientStatus{ReadLimit: r.ReadLimit, ReadsUsed: r.ReadsUsed, Revoked: r.Revoked}
+	}
+	return out, nil
+}
+
+// Revoke closes recipient link n for good, if deleteToken matches. Once
+// every link is closed, the paste is removed.
+func (s *Store) Revoke(id, deleteToken string, n int) error {
+	if !ValidID(id) {
+		return ErrNotFound
+	}
+	dir := path.Join(dirPastes, id)
+	gone, err := func() (bool, error) {
+		// The same locks as an open, so a reservation and a revocation never
+		// overwrite each other's metadata.
+		s.readMu.Lock()
+		defer s.readMu.Unlock()
+		if !s.lock(id) {
+			return false, ErrConflict
+		}
+		defer s.unlock(id)
+		m, err := s.readMeta(dir, id)
+		if err != nil {
+			return false, err
+		}
+		if !TokenMatches(m.DeleteTokenHash, deleteToken) || len(m.Recipients) == 0 || s.expired(m) || exhausted(m) || n < 0 || n >= len(m.Recipients) {
+			return false, ErrNotFound
+		}
+		if !m.Recipients[n].Revoked {
+			m.Recipients[n].Revoked = true
+			if err := s.writeJSON(dir, fileMeta, m); err != nil {
+				return false, err
+			}
+		}
+		return exhausted(m), nil
+	}()
+	if err != nil {
+		return err
+	}
+	if gone {
+		// Every link is closed, so it is out of service already; a failed
+		// removal is retried by the sweeper.
+		s.discard(dir, id)
+	}
+	return nil
+}
 
 // Delete removes a published paste if deleteToken matches.
 func (s *Store) Delete(id, deleteToken string) error {
@@ -1154,10 +1376,10 @@ func (s *Store) readUpload(dir, uploadToken string) (upload, error) {
 	if u.TotalSize <= 0 || u.Received < 0 || u.Received > u.TotalSize || u.NextChunk < 0 || u.ExpiresIn <= 0 {
 		return upload{}, ErrCorrupt
 	}
-	if u.Burn && u.ReadLimit == 0 {
+	if u.Burn && u.ReadLimit == 0 && u.Recipients == nil {
 		u.ReadLimit = 1 // pending uploads created before configurable reads
 	}
-	if !validReadLimit(u.Burn, u.ReadLimit) {
+	if !validAccess(u.Burn, u.BurnTokenHash, u.CommentTokenHash, u.ReadLimit, 0, u.Recipients) {
 		return upload{}, ErrCorrupt
 	}
 	return u, nil
@@ -1173,10 +1395,10 @@ func (s *Store) readMeta(dir, id string) (Meta, error) {
 	if m.ID != id || m.Size <= 0 || m.ExpiresAt.IsZero() {
 		return Meta{}, ErrCorrupt
 	}
-	if m.Burn && m.ReadLimit == 0 && m.ReadsUsed == 0 {
+	if m.Burn && m.ReadLimit == 0 && m.ReadsUsed == 0 && m.Recipients == nil {
 		m.ReadLimit = 1 // existing burn pastes still allow exactly one open
 	}
-	if !validReadLimit(m.Burn, m.ReadLimit) || m.ReadsUsed < 0 || m.ReadsUsed > m.ReadLimit || (m.Burn && m.CommentTokenHash != "") {
+	if !validAccess(m.Burn, m.BurnTokenHash, m.CommentTokenHash, m.ReadLimit, m.ReadsUsed, m.Recipients) {
 		return Meta{}, ErrCorrupt
 	}
 	return m, nil

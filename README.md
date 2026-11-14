@@ -40,7 +40,8 @@ mid-2022 on; Safari 16.4 or later). Older browsers cannot open it.
 
 | Option | What it does |
 |---|---|
-| **Password** | Readers need the password as well as the link. At least 8 characters. |
+| **Password** | Readers need the password as well as the link. At least 8 characters. The key button generates a strong random one (20 characters, about 116 bits) and shows it, so you can copy it and send it separately. |
+| **Separate links** | One link for each person (2 to 20), instead of one shared link. Each link counts its own opens (with burn after reading, each gets that many), and the delete link shows how often each was opened and can revoke any of them. Revoking stops that link from opening the paste, but cannot take back what its holder already saw. Cannot be combined with a discussion. |
 | **Discussion** | Everyone who can open the paste can read and post encrypted comments: with a password, only people who also know it. Cannot be combined with burn after reading. |
 | **Burn after reading** | The paste is deleted after a set number of opens (1 to 1,000; 1 by default). Every authorized open counts, including reloads and interrupted downloads; wrong passwords and link previews do not. |
 
@@ -55,6 +56,9 @@ After opening a paste:
 | **Show preview** | Shows a text attachment (such as `.txt`, `.md`, `.json` or `.csv`) as plain text, only after you click. JSON and Markdown stay literal source text. Images use **Show image**. |
 | **Email** | Opens your email app with the link. The text and password are not included and nothing is sent automatically. |
 | **QR code** | Shows a QR code of the link, made in your browser. |
+
+The paste page and the page you get after creating one show how long until
+the paste is deleted, counting down. The time comes from the server.
 
 Email and QR code contain the secret link, so send any password another
 way. If a paste contains invisible or direction-changing characters (a trick
@@ -580,7 +584,7 @@ reordered or truncated data, without holding whole files in memory.
 | Link secret | 32 fresh random bytes per paste, written as 43 base64url characters after `#`. |
 | Encryption key | A 32-byte stream key derived from the master key: the link secret alone, or the link secret combined with the password. |
 | Password | Argon2id v1.3 with a fresh 16-byte salt, `opslimit = 3`, `memlimit = 256 MiB` and a 32-byte result, after Unicode NFC normalization. Keyed BLAKE2b-256 combines it with the link secret. Neither the password nor the master key is sent to the API. |
-| Separate keys | Paste encryption, comment encryption, discussion access and burn access use distinct `crypto_kdf_derive_from_key` contexts. Access tokens sent to the server cannot decrypt anything. |
+| Separate keys | Paste encryption, comment encryption, discussion access, burn access and separate-link access use distinct `crypto_kdf_derive_from_key` contexts. Access tokens sent to the server cannot decrypt anything. |
 | Comments | XChaCha20-Poly1305 with a fresh 24-byte random nonce, under the separate comment key, bound to the paste ID. Names, text, times and replies are encrypted, and padded to 4 KiB (rounded up like pastes beyond that), so a comment's size does not show its length. Names are not verified. |
 | IDs and tokens | Paste IDs are 128 random bits (32 hexadecimal characters); upload and delete tokens are 256 random bits. The server stores SHA-256 hashes of tokens and compares them in constant time. |
 
@@ -603,6 +607,7 @@ Binary units are powers of 1,024. Text limits count JavaScript UTF-16 units.
 | Discussions | Up to 200 comments per paste; 4,000 characters of text and a 40-character name each. |
 | Expiry | 5 or 30 minutes; 1, 3 or 12 hours; 1 or 3 days; 7 days or 30 days. Never unlimited. Expired pastes are never served and are removed within a minute. |
 | Burn after reading | 1 to 1,000 authorized opens (default 1), counted before delivery and kept across restarts. |
+| Separate links | 2 to 20 per paste, each with no open limit or 1 to 1,000 opens. |
 
 <details>
 <summary>Key derivation and data formats</summary>
@@ -623,9 +628,16 @@ Each subkey is `crypto_kdf_derive_from_key(32, 1, context, master)`:
 | `nbcmtenc` | Comment encryption key |
 | `nbcmtacc` | Discussion access token |
 | `nbburnac` | Burn-read access token |
+| `nbrcptac` | Key for the access tokens of separate links (never sent) |
 
 The salt is public: random with a password, all zeros without. Access tokens
 are base64url encoded; the server stores only their hashes.
+
+**Separate links:** each link carries its own 16 random bytes after the key,
+and its access token is `BLAKE2b-256(key = nbrcptac subkey, message = those
+bytes)`. Making a token takes the link and any password, and someone who knows
+the key but not another link's bytes cannot make that link's token, so a
+revoked link cannot borrow another one.
 
 **Encrypted paste, version 2** (written by this version):
 
@@ -749,7 +761,7 @@ Forwarded addresses are trusted only from `NULLBIN_TRUSTED_PROXIES`.
 | Concurrent downloads | 512 in total; 16 per client and 32 per IPv6 `/48` |
 | Minimum download rate | 32 KiB/s on average after 2 minutes (for password and save dialogs). Time the server spends on its own bandwidth limits does not count. Every download also ends 1 minute plus 1 second per 32 KiB of paste after it starts. |
 | Download bandwidth | 4 MiB/s per client, 16 MiB/s in total |
-| Request size | 1 KiB to create a paste; 16 KiB of headers |
+| Request size | 4 KiB to create a paste; 16 KiB of headers |
 | Disk writes at once | 64 creates, finalizes, deletes and comments; others wait up to 10 s |
 | Timeouts | 10 s for headers, 60 s idle, 30 s for other requests, 5 minutes per upload chunk |
 
@@ -785,6 +797,11 @@ rate limited):
   enables a discussion.
 - `burn_token` (required for burn, otherwise not allowed): 43 base64url
   characters, derived in the browser with the `nbburnac` context.
+- `recipients` (optional): separate links, 2 to 20 entries of
+  `{"token": "<43 base64url characters>", "max_reads": n}`, where `max_reads`
+  (1 to 1000) is optional and its absence means no limit. Requires
+  `"burn_after_reading": true` and replaces `burn_token`, `max_reads` and
+  `comment_token`, which are then not allowed. Tokens must differ.
 
 Returns `201` with `{"id": "...", "upload_token": "...", "delete_token": "..."}`;
 or `400` invalid, `413` too large (with `max_size`), `415` wrong type, `429`
@@ -811,10 +828,25 @@ pastes return `404`. `HEAD` returns `405`.
 **`POST /api/v1/pastes/{id}/read`** (with `Nullbin-Burn-Token`) streams a
 burn paste, using one open before any data is sent. A wrong or missing
 token returns `404` and uses nothing. The response includes
-`Nullbin-Reads-Remaining`.
+`Nullbin-Reads-Remaining`. For a paste with separate links, the token is
+one link's own: the open counts against that link only, the count is that
+link's (and is left out when it has no limit), and a link that was revoked or
+has used all its opens returns `410` to its own token.
+
+Every download also includes `Nullbin-Expires-In`: the seconds until the
+paste expires.
 
 **`DELETE /api/v1/pastes/{id}`** (with `Nullbin-Delete-Token`) deletes the
 paste and its comments. Returns `204`; or `404`, `409` busy.
+
+**`GET /api/v1/pastes/{id}/recipients`** (with `Nullbin-Delete-Token`)
+returns each separate link, in order:
+`{"recipients": [{"opens": 1, "max_opens": 2, "revoked": false}, ...]}`
+(`max_opens` is `null` for no limit, and such a link's `opens` stops counting at 1000). Other pastes return `404`.
+
+**`POST /api/v1/pastes/{id}/recipients/{n}/revoke`** (with
+`Nullbin-Delete-Token`) closes link `n` (from 0) for good. Once every link is
+revoked or used up, the paste is deleted. Returns `204`; or `404`, `409` busy.
 
 **`POST /api/v1/pastes/{id}/comments`** (with `Nullbin-Comment-Token`) adds
 one encrypted comment of 41 bytes to 32 KiB. Returns `201` with
@@ -830,7 +862,9 @@ separately hosted website lists its version and hashes at `/version.json`.
 
 **Links** always use the website's address: `https://host/p/<id>#<key>`
 (with `.b` after the key for burn after reading), and
-`https://host/d/<id>#d.<delete token>`.
+`https://host/d/<id>#d.<delete token>`. A separate link adds `.r` and its 22
+base64url characters after the key (and after any `.b`); the delete link of
+such a paste ends in `.r`, so its page lists the links.
 
 **Separate website (Option B):** the API's `NULLBIN_FRONTEND_ORIGIN` and the
 website's build-time `NULLBIN_API_ORIGIN` name each other. CORS allows only

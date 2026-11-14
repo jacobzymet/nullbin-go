@@ -4,7 +4,7 @@
 
 import { ApiError, fetchBurnPrefix, fetchPaste } from './api.ts';
 import { CloneableAttachment, MAX_BUFFERED_DOWNLOAD } from './attachments.ts';
-import { burnAccessToken, deriveKey, openPaste, type OpenedPaste } from './crypto.ts';
+import { burnAccessToken, deriveKey, openPaste, recipientAccessToken, type OpenedPaste } from './crypto.ts';
 import { initDiscussion } from './discussion.ts';
 import { hasHiddenChars, stripHiddenChars } from './hidden.ts';
 import {
@@ -16,10 +16,12 @@ import {
   chip,
   el,
   formatBytes,
+  formatCountdown,
   reveal,
   show,
   showProblem,
   showSection,
+  startCountdown,
 } from './dom.ts';
 import { ByteReader, PasteError, parsePrefix } from './format.ts';
 import { downloadBlob as download } from './files.ts';
@@ -55,16 +57,25 @@ export async function initView(id: string, fragment: string): Promise<void> {
   }
   if (parsed.burn) {
     const gate = el('gate-burn');
+    if (parsed.recipient !== null) {
+      el('burn-title').textContent = 'This link has a limited number of opens';
+      el('burn-text').textContent = 'Opening uses one of this link’s allowed opens. Interrupted downloads also count.';
+    }
     reveal(gate);
     const button = el<HTMLButtonElement>('burn-open');
     el('burn-title').focus(); // announce the warning; the next Tab reaches the button
     await new Promise<void>((resolve) => button.addEventListener('click', () => resolve(), { once: true }));
     show(gate, false);
   }
-  await open(id, parsed.key, parsed.burn, `${window.location.origin}/p/${id}${fragment}`);
+  await open(id, parsed.key, parsed.burn, parsed.recipient, `${window.location.origin}/p/${id}${fragment}`);
 }
 
-async function open(id: string, key: Uint8Array, burn: boolean, shareURL: string): Promise<void> {
+/**
+ * Opens a paste. burn: the link has an open limit. recipient: the secret of
+ * one of the paste's separate links, or null. Both kinds of link are opened
+ * with a token that proves the reader knows the key and any password.
+ */
+async function open(id: string, key: Uint8Array, burn: boolean, recipient: Uint8Array | null, shareURL: string): Promise<void> {
   const sodium = await loadSodium();
   const progress = new Progress('view');
   const stage = el('view-stage');
@@ -76,10 +87,12 @@ async function open(id: string, key: Uint8Array, burn: boolean, shareURL: string
   let reader: ByteReader | null = null;
   let password: string | null = null;
   let readsRemaining = 0;
+  // When the paste expires, on this browser's monotonic clock.
+  let deadline: number | null = null;
   let file: CloneableAttachment | null = null;
   try {
     let download;
-    if (burn) {
+    if (burn || recipient !== null) {
       // Fetch only the public salt/flags; no ciphertext is consumed until
       // the reader proves knowledge of the link key and any password.
       const prefix = parsePrefix(await fetchBurnPrefix(id));
@@ -91,10 +104,10 @@ async function open(id: string, key: Uint8Array, burn: boolean, shareURL: string
           if (password === null) throw new PasteError('cancelled', 'Cancelled.');
         }
         const master = prefix.password ? deriveKey(sodium, key, password!, prefix.salt) : key.slice();
-        const token = burnAccessToken(sodium, master);
+        const token = recipient !== null ? recipientAccessToken(sodium, master, recipient) : burnAccessToken(sodium, master);
         sodium.memzero(master);
         try {
-          download = await fetchPaste(id, token);
+          download = await fetchPaste(id, token, burn, recipient !== null);
           break;
         } catch (e) {
           if (!(e instanceof ApiError) || e.status !== 404 || !prefix.password) throw e;
@@ -107,7 +120,10 @@ async function open(id: string, key: Uint8Array, burn: boolean, shareURL: string
       download = await fetchPaste(id);
     }
     const { body, size } = download;
+    // A separate link without a limit has no count, whatever its link says.
+    if (recipient !== null && download.readsRemaining === null) burn = false;
     readsRemaining = download.readsRemaining ?? 0;
+    if (download.expiresIn !== null) deadline = performance.now() + download.expiresIn * 1000;
     reader = new ByteReader(body, (received) => {
       if (size > 0) progress.set(received / size, `${formatBytes(received)} of ${formatBytes(size)}`);
     });
@@ -141,22 +157,40 @@ async function open(id: string, key: Uint8Array, burn: boolean, shareURL: string
   } finally {
     password = null;
     sodium.memzero(key);
+    if (recipient !== null) sodium.memzero(recipient);
   }
   show(el('gate-password'), false);
   show(el('view-progress'), false);
 
   const { meta } = opened;
   const chips: HTMLLIElement[] = [];
+  if (recipient !== null) {
+    const own = chip('Your own link', 'users', 'accent');
+    own.title = 'The sender made a separate link for each person. They can see how often this one was opened, and revoke it.';
+    chips.push(own);
+  }
   if (burn) {
-    const remaining = chip(readsRemaining === 0 ? 'Burned' : `${readsRemaining.toLocaleString()} ${readsRemaining === 1 ? 'open' : 'opens'} left`, 'flame', 'warn');
-    remaining.title = 'Remaining opens when this paste was opened. Other readers may use them.';
+    const remaining = chip(readsRemaining === 0 ? (recipient !== null ? 'No opens left' : 'Burned') : `${readsRemaining.toLocaleString()} ${readsRemaining === 1 ? 'open' : 'opens'} left`, 'flame', 'warn');
+    remaining.title = recipient !== null
+      ? 'Opens left on this link when it was opened.'
+      : 'Remaining opens when this paste was opened. Other readers may use them.';
     chips.push(remaining);
   }
   if (asked) chips.push(chip('Password', 'lock'));
   if (meta.discussion) chips.push(chip('Discussion', 'chat', 'accent'));
   if (opened.file) chips.push(chip('1 file', 'file'));
   el('view-chips').replaceChildren(...chips);
-  show(el('burned-note'), burn && readsRemaining === 0);
+  const burned = burn && readsRemaining === 0;
+  if (burned && recipient !== null) {
+    // Only this link is used up; the sender's other links may still open it.
+    el('burned-note').querySelector('span')!.textContent = 'This link has now used all its opens and can’t open the paste again. Copy or save what you need before you leave this page.';
+  }
+  show(el('burned-note'), burned);
+  // The time left comes from the server, which decides when to delete it.
+  if (deadline !== null && !burned) {
+    startCountdown(el('view-expires-text'), deadline, (left) => (left > 0 ? `Deleted from the server in ${formatCountdown(left)}` : 'Expired: deleted from the server'));
+    show(el('view-expires'));
+  }
 
   if (meta.text.length > 0 || !opened.file) renderText(meta.text);
   const attachment = file ? renderFile(file, meta.filename, meta.size, meta.mime, () => reader!.cancel()) : null;
@@ -451,6 +485,10 @@ export function safeFilename(name: string | null): string {
 }
 
 function showFailure(e: unknown, burn: boolean): void {
+  if (e instanceof ApiError && e.status === 410) {
+    showProblem('This link no longer works', 'The sender revoked it, or it has used all its opens. Ask the sender if you still need the paste.');
+    return;
+  }
   if (e instanceof ApiError && e.status === 404) {
     showProblem('This paste doesn’t exist', 'It may have expired or been deleted. If it burns after reading, someone has already opened it.');
     return;

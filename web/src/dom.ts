@@ -154,7 +154,7 @@ export function chip(label: string, iconName?: string, tone?: 'warn' | 'accent' 
 }
 
 /** Copies with local feedback and an actionable fallback if permission is denied. */
-export function bindCopy(button: HTMLButtonElement, value: () => string, done: string, select?: HTMLElement): void {
+export function bindCopy(button: HTMLButtonElement, value: () => string, done: string, select?: HTMLElement, selected = 'The link is selected'): void {
   let copying = false;
   button.addEventListener('click', async () => {
     if (copying) return;
@@ -175,7 +175,7 @@ export function bindCopy(button: HTMLButtonElement, value: () => string, done: s
         selection?.removeAllRanges();
         selection?.addRange(range);
       }
-      toast('Could not copy automatically. The link is selected; use your device’s Copy command.', 'warn');
+      toast(`Could not copy automatically. ${selected}; use your device’s Copy command.`, 'warn');
     } else {
       toast('Could not copy. Use Save document to save the text instead.', 'warn');
     }
@@ -251,6 +251,38 @@ export function timeUntil(date: Date, now: number = Date.now()): string {
   if (h < 24) return h === 1 ? 'in 1 hour' : `in ${h} hours`;
   const d = Math.round(h / 24);
   return d === 1 ? 'in 1 day' : `in ${d} days`;
+}
+
+/** Time left as "2d 4h 05m", "4h 05m 09s", "5m 09s" or "9s". */
+export function formatCountdown(ms: number): string {
+  const total = Math.max(0, Math.ceil(ms / 1000));
+  const d = Math.floor(total / 86400);
+  const h = Math.floor((total % 86400) / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  const two = (n: number) => String(n).padStart(2, '0');
+  if (d > 0) return `${d}d ${h}h ${two(m)}m`;
+  if (h > 0) return `${h}h ${two(m)}m ${two(s)}s`;
+  if (m > 0) return `${m}m ${two(s)}s`;
+  return `${s}s`;
+}
+
+/**
+ * Re-renders node every second until the deadline, a performance.now()
+ * time (so changing the computer's clock does not change it). Returns a
+ * function that stops it.
+ */
+export function startCountdown(node: HTMLElement, deadline: number, render: (left: number) => string): () => void {
+  let timer = 0;
+  const stop = () => clearInterval(timer);
+  const tick = () => {
+    const left = deadline - performance.now();
+    node.textContent = render(left);
+    if (left <= 0) stop();
+  };
+  timer = window.setInterval(tick, 1000);
+  tick();
+  return stop;
 }
 
 /** Yields to the browser so status text paints before blocking work. */

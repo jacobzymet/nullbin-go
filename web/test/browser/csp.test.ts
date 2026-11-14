@@ -911,6 +911,200 @@ test('custom burn limit allows three password-authorized opens and then deletes 
   await gone.context.close();
 });
 
+test('the password generator fills a strong password that opens the paste', async () => {
+  const h = await open();
+  await goto(h, `${origin}/`);
+  await h.page.fill('#text', 'generated password paste');
+  await h.page.check('#password-switch');
+  await h.page.click('#password-generate');
+  const password = await h.page.inputValue('#password');
+  assert.match(password, /^[A-HJ-NP-Za-km-np-z2-9]{20}$/);
+  assert.equal(await h.page.getAttribute('#password', 'type'), 'text', 'a generated password is shown so it can be copied');
+  await h.page.click('#password-generate');
+  assert.notEqual(await h.page.inputValue('#password'), password, 'each click makes a new one');
+  const generated = await h.page.inputValue('#password');
+  await h.page.click('#create-submit');
+  await h.page.waitForSelector('#result', { state: 'visible', timeout: 60_000 });
+  assert.equal(await h.page.inputValue('#password'), '', 'the password is cleared once the paste is created');
+  const share = `${await h.page.textContent('#share-server')}${await h.page.textContent('#share-key')}`;
+  for (const s of h.sent) assert.ok(!(s.body?.toString('latin1') ?? '').includes(generated), 'the password reached the server');
+  await h.check();
+  await h.context.close();
+  const v = await open();
+  await goto(v, share);
+  await unlock(v.page, generated);
+  await v.page.waitForSelector('#view-content:not([hidden])', { timeout: 60_000 });
+  assert.equal(await viewerText(v.page), 'generated password paste');
+  await v.check();
+  await v.context.close();
+});
+
+test('the time until deletion counts down on the result and the paste', async () => {
+  const h = await open();
+  await goto(h, `${origin}/`);
+  await h.page.fill('#text', 'countdown');
+  await h.page.selectOption('#expiry', '3600');
+  await h.page.click('#create-submit');
+  await h.page.waitForSelector('#result', { state: 'visible', timeout: 60_000 });
+  const first = (await h.page.textContent('#result-expires')) ?? '';
+  assert.match(first, / · deleted in (59m [0-5]\d|1h 00m 00)s$/);
+  await h.page.waitForFunction((t) => document.getElementById('result-expires')!.textContent !== t, first, { timeout: 5000 });
+  const share = `${await h.page.textContent('#share-server')}${await h.page.textContent('#share-key')}`;
+  await h.check();
+  await h.context.close();
+  const v = await open();
+  await goto(v, share);
+  await v.page.waitForSelector('#view-expires:not([hidden])', { timeout: 60_000 });
+  const shown = (await v.page.textContent('#view-expires-text')) ?? '';
+  assert.match(shown, /^Deleted from the server in (59m [0-5]\d|1h 00m 00)s$/);
+  await v.page.waitForFunction((t) => document.getElementById('view-expires-text')!.textContent !== t, shown, { timeout: 5000 });
+  await v.check();
+  await v.context.close();
+});
+
+test('separate links: one per person, each with its own opens, revocable one by one', async (t) => {
+  // Read-heavy: its own rate-limit budget, like the other extra scenarios.
+  await restartAPI();
+  t.after(() => restartAPI());
+  const c = await open();
+  await goto(c, `${origin}/`);
+  await c.page.fill('#text', 'for three people');
+  await c.page.check('#recipients');
+  assert.ok(await c.page.isDisabled('#discussion'), 'separate links rule out a discussion');
+  await c.page.fill('#recipients-count', '3');
+  await c.page.check('#burn');
+  await c.page.fill('#burn-reads', '2');
+  await c.page.check('#password-switch');
+  await c.page.fill('#password', 'three people pw');
+  await c.page.click('#create-submit');
+  await c.page.waitForSelector('#recipient-links:not([hidden])', { timeout: 60_000 });
+  assert.equal(await c.page.isVisible('#share-single'), false, 'no single shared link');
+  const links = await c.page.$$eval('#recipient-list .nb-link', (ps) => ps.map((p) => p.textContent ?? ''));
+  assert.equal(links.length, 3);
+  assert.equal(new Set(links).size, 3);
+  const base = links[0]!.split('#')[0]!;
+  for (const l of links) assert.match(l, new RegExp(`^${base}#${KEY}\\.b\\.r[A-Za-z0-9_-]{22}$`));
+  assert.equal(new Set(links.map((l) => l.split('.r')[0])).size, 1, 'the same key in every link');
+  const create = c.sent.find((s) => s.method === 'POST' && s.path === '/api/v1/pastes')!;
+  const body = JSON.parse(create.body!.toString('utf8')) as { recipients: { token: string; max_reads: number }[]; burn_token?: string; comment_token?: string };
+  assert.equal(body.recipients.length, 3);
+  assert.ok(body.recipients.every((r) => /^[A-Za-z0-9_-]{43}$/.test(r.token) && r.max_reads === 2));
+  assert.equal(body.burn_token, undefined);
+  assert.equal(body.comment_token, undefined);
+  for (const l of links) {
+    const [key, secret] = l.split('#')[1]!.split('.b.r');
+    for (const s of c.sent) {
+      const seen = `${s.path} ${JSON.stringify(s.headers)} ${s.body?.toString('latin1') ?? ''}`;
+      assert.ok(!seen.includes(key!) && !seen.includes(secret!), 'a link secret reached the server');
+    }
+  }
+  const del = await c.page.inputValue('#delete-link');
+  assert.match(del, new RegExp(`/d/${ID}#d\\.${KEY}\\.r$`), 'the delete link says the paste has separate links');
+  await c.check();
+  await c.context.close();
+
+  const openLink = async (link: string) => {
+    const h = await open();
+    await goto(h, link);
+    await h.page.waitForSelector('#gate-burn', { state: 'visible' });
+    assert.equal(await h.page.textContent('#burn-title'), 'This link has a limited number of opens');
+    await h.page.click('#burn-open');
+    await unlock(h.page, 'three people pw');
+    await h.page.waitForSelector('#view-content:not([hidden]), #problem:not([hidden])', { timeout: 60_000 });
+    return h;
+  };
+  // Link 1: its own count.
+  const a = await openLink(links[0]!);
+  assert.equal(await viewerText(a.page), 'for three people');
+  const chips = (await a.page.textContent('#view-chips')) ?? '';
+  assert.match(chips, /Your own link/);
+  assert.match(chips, /1 open left/);
+  assert.ok(await a.page.isVisible('#view-expires'), 'the countdown shows');
+  const read = a.sent.find((s) => s.path.endsWith('/read'))!;
+  assert.match(read.headers['nullbin-burn-token'] ?? '', /^[A-Za-z0-9_-]{43}$/);
+  assert.ok(body.recipients.some((r) => r.token === read.headers['nullbin-burn-token']), 'link 1 sends its own token');
+  await a.check();
+  await a.context.close();
+  // Link 2, once.
+  const b = await openLink(links[1]!);
+  assert.match((await b.page.textContent('#view-chips')) ?? '', /1 open left/, 'link 2 does not share link 1’s count');
+  await b.check();
+  await b.context.close();
+
+  // The owner sees each link and revokes link 1.
+  const o = await open();
+  await goto(o, del);
+  await o.page.waitForSelector('#recipients-manage:not([hidden])');
+  const states = async () => o.page.$$eval('#recipient-status li', (lis) => lis.map((li) => li.textContent ?? ''));
+  assert.deepEqual(await states(), ['Link 1Opened 1 of 2 timesRevoke', 'Link 2Opened 1 of 2 timesRevoke', 'Link 3Opened 0 of 2 timesRevoke']);
+  await o.page.click('[aria-label="Revoke link 1"]');
+  await o.page.waitForFunction(() => document.querySelector('#recipient-status li')?.textContent?.startsWith('Link 1Revoked'));
+  assert.equal(await o.page.locator('[aria-label="Revoke link 1"]').count(), 0);
+  await o.check();
+  await o.context.close();
+
+  // Link 1 is closed, and its holder is told so (not asked for the
+  // password again); link 2 still has its last open.
+  const a2 = await openLink(links[0]!);
+  assert.equal(await a2.page.textContent('#problem-title'), 'This link no longer works');
+  await a2.check(/status of 410/);
+  await a2.context.close();
+  const b2 = await openLink(links[1]!);
+  assert.equal(await viewerText(b2.page), 'for three people');
+  assert.match(await b2.page.textContent('#burned-note') ?? '', /This link has now used all its opens/);
+  await b2.check();
+  await b2.context.close();
+
+  // Without its own secret, the key and password alone open nothing.
+  const bare = await open();
+  await goto(bare, links[2]!.split('.r')[0]!);
+  await bare.page.click('#burn-open');
+  await unlock(bare.page, 'three people pw');
+  await bare.page.waitForSelector('#view-password-error', { state: 'visible', timeout: 60_000 });
+  assert.equal(await bare.page.isVisible('#view-content'), false);
+  await bare.check(/status of 404/);
+  await bare.context.close();
+
+  // Revoking the last open link deletes the paste.
+  const o2 = await open();
+  await goto(o2, del);
+  await o2.page.waitForSelector('#recipients-manage:not([hidden])');
+  assert.deepEqual(await o2.page.$$eval('#recipient-status li', (lis) => lis.map((li) => li.textContent ?? '')), ['Link 1Revoked · opened 1 time', 'Link 2Used up · opened 2 times', 'Link 3Opened 0 of 2 timesRevoke']);
+  await o2.page.click('[aria-label="Revoke link 3"]');
+  await o2.page.waitForSelector('#delete-done:not([hidden])');
+  await o2.check(/status of 404/);
+  await o2.context.close();
+});
+
+test('separate links without an open limit open any number of times', async (t) => {
+  await restartAPI();
+  t.after(() => restartAPI());
+  const c = await open();
+  await goto(c, `${origin}/`);
+  await c.page.fill('#text', 'unlimited links');
+  await c.page.check('#recipients');
+  await c.page.click('#create-submit');
+  await c.page.waitForSelector('#recipient-links:not([hidden])', { timeout: 60_000 });
+  const links = await c.page.$$eval('#recipient-list .nb-link', (ps) => ps.map((p) => p.textContent ?? ''));
+  assert.equal(links.length, 2);
+  for (const l of links) assert.match(l, new RegExp(`#${KEY}\\.r[A-Za-z0-9_-]{22}$`));
+  await c.check();
+  await c.context.close();
+  for (let i = 0; i < 3; i++) {
+    const h = await open();
+    await goto(h, links[i % 2]!);
+    await h.page.waitForSelector('#view-content:not([hidden])', { timeout: 60_000 });
+    assert.equal(await h.page.isVisible('#gate-burn'), false, 'no burn warning');
+    assert.equal(await viewerText(h.page), 'unlimited links');
+    const chips = (await h.page.textContent('#view-chips')) ?? '';
+    assert.match(chips, /Your own link/);
+    assert.doesNotMatch(chips, /left|Burned/);
+    assert.equal(await h.page.isVisible('#burned-note'), false);
+    await h.check();
+    await h.context.close();
+  }
+});
+
 test('delete link removes the paste', async () => {
   const { share, del } = await createPaste({ text: 'delete me' });
   const h = await open();
@@ -1238,7 +1432,7 @@ test('settings keep logical rows across viewport sizes, option states, and input
               .map((element) => ({ id: element.id || element.textContent!.trim(), height: element.getBoundingClientRect().height, clipped: element.scrollWidth > element.clientWidth + 1 }));
             return {
               overflow: document.documentElement.scrollWidth > innerWidth,
-              toolbar: rect('.nb-toolbar'), expiry: rect('#expiry'), burn: rect('.nb-burn-setting'),
+              toolbar: rect('.nb-toolbar'), expiry: rect('#expiry'), burn: rect('.nb-burn-setting'), recipients: rect('.nb-recipients-setting'),
               discussion: rect('label:has(#discussion)'), password: rect('label:has(#password-switch)'),
               passwordField: rect('#password-row'), attach: rect('#attach'), submit: rect('#create-submit'), controls,
             };
@@ -1250,14 +1444,16 @@ test('settings keep logical rows across viewport sizes, option states, and input
             assert.equal(control.height, width < 768 || hasTouch ? 44 : 36, `${label}: ${control.id} height`);
           }
           if (width < 768) {
-            assert.ok(layout.discussion.y >= layout.burn.bottom + 7, `${label}: discussion needs its own row`);
+            assert.ok(layout.recipients.y >= layout.burn.bottom + 7, `${label}: separate links need their own row`);
+            assert.ok(layout.discussion.y >= layout.recipients.bottom + 7, `${label}: discussion needs its own row`);
             assert.ok(layout.password.y >= layout.discussion.bottom + 7, `${label}: password needs its own row`);
             if (layout.passwordField.height) assert.ok(layout.passwordField.y >= layout.password.bottom + 7, `${label}: password field follows its checkbox`);
             assert.ok(layout.submit.y >= layout.attach.bottom + 11, `${label}: Create follows Attach`);
             for (const action of [layout.attach, layout.submit]) assert.ok(Math.abs(action.width - layout.toolbar.width) < 1, `${label}: standalone actions fill their row`);
           } else if (width < 1200) {
             assert.equal(layout.expiry.y, layout.burn.y, `${label}: first settings row aligns`);
-            assert.equal(layout.discussion.y, layout.password.y, `${label}: second settings row aligns`);
+            assert.equal(layout.recipients.y, layout.discussion.y, `${label}: second settings row aligns`);
+            assert.ok(layout.password.y >= layout.discussion.bottom + 7, `${label}: password has the third row`);
             assert.equal(layout.attach.y, layout.submit.y, `${label}: action row aligns`);
           }
         };
@@ -1266,6 +1462,10 @@ test('settings keep logical rows across viewport sizes, option states, and input
         await h.page.fill('#burn-reads', '1000');
         await h.page.check('#password-switch');
         await checkLayout('burn limit and password');
+        await h.page.check('#recipients');
+        await h.page.fill('#recipients-count', '20');
+        await checkLayout('separate links, burn limit and password');
+        await h.page.uncheck('#recipients');
         await h.page.uncheck('#burn');
         await h.page.check('#discussion');
         await checkLayout('discussion and password');
