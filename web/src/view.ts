@@ -87,7 +87,8 @@ async function open(id: string, key: Uint8Array, burn: boolean, recipient: Uint8
   let reader: ByteReader | null = null;
   let password: string | null = null;
   let readsRemaining = 0;
-  // When the paste expires, on this browser's monotonic clock.
+  // When the paste expires (Date.now() time), from the seconds left the
+  // server reported, so a wrong computer clock does not matter.
   let deadline: number | null = null;
   let file: CloneableAttachment | null = null;
   try {
@@ -121,9 +122,9 @@ async function open(id: string, key: Uint8Array, burn: boolean, recipient: Uint8
     }
     const { body, size } = download;
     // A separate link without a limit has no count, whatever its link says.
-    if (recipient !== null && download.readsRemaining === null) burn = false;
+    if (recipient !== null) burn = download.readsRemaining !== null;
     readsRemaining = download.readsRemaining ?? 0;
-    if (download.expiresIn !== null) deadline = performance.now() + download.expiresIn * 1000;
+    if (download.expiresIn !== null) deadline = Date.now() + download.expiresIn * 1000;
     reader = new ByteReader(body, (received) => {
       if (size > 0) progress.set(received / size, `${formatBytes(received)} of ${formatBytes(size)}`);
     });

@@ -182,6 +182,14 @@ export function bindCopy(button: HTMLButtonElement, value: () => string, done: s
   });
 }
 
+/** Hides a password shown with bindReveal again, without moving the focus. */
+export function concealPassword(button: HTMLButtonElement, input: HTMLInputElement): void {
+  input.type = 'password';
+  button.setAttribute('aria-pressed', 'false');
+  button.setAttribute('aria-label', 'Show password');
+  setIcon(button, 'eye');
+}
+
 /** Wires a show/hide button to a password input. */
 export function bindReveal(button: HTMLButtonElement, input: HTMLInputElement): void {
   button.addEventListener('click', () => {
@@ -268,15 +276,15 @@ export function formatCountdown(ms: number): string {
 }
 
 /**
- * Re-renders node every second until the deadline, a performance.now()
- * time (so changing the computer's clock does not change it). Returns a
+ * Re-renders node every second until the deadline, a Date.now() time.
+ * (performance.now() would pause while the device sleeps.) Returns a
  * function that stops it.
  */
 export function startCountdown(node: HTMLElement, deadline: number, render: (left: number) => string): () => void {
   let timer = 0;
   const stop = () => clearInterval(timer);
   const tick = () => {
-    const left = deadline - performance.now();
+    const left = deadline - Date.now();
     node.textContent = render(left);
     if (left <= 0) stop();
   };

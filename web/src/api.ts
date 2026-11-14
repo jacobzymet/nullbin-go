@@ -173,11 +173,11 @@ export async function fetchPaste(id: string, burnToken: string | null = null, li
   if (resp.status !== 200 || !resp.body) throw await errorFrom(resp);
   const size = Number(resp.headers.get('Content-Length'));
   let readsRemaining: number | null = null;
-  if (burnToken !== null && limited) {
+  if (burnToken !== null && (limited || recipientLink)) {
     const raw = resp.headers.get('Nullbin-Reads-Remaining');
-    // Older servers support only single-open burns and omit this header. A
-    // separate link without a limit (a server new enough to have them) never
-    // sends it, even if its link was edited to claim a limit.
+    // Older servers support only single-open burns and omit this header. For
+    // a separate link the server's answer decides, whatever the link says:
+    // a count if the link has a limit, none if it has not.
     readsRemaining = raw === null ? (recipientLink ? null : 0) : Number(raw);
     if (readsRemaining !== null && ((raw !== null && !/^\d+$/.test(raw)) || !Number.isSafeInteger(readsRemaining) || readsRemaining < 0 || readsRemaining >= MAX_BURN_READS)) {
       await resp.body.cancel();

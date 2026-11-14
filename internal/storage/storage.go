@@ -920,6 +920,13 @@ func (s *Store) Revoke(id, deleteToken string, n int) error {
 		return ErrNotFound
 	}
 	dir := path.Join(dirPastes, id)
+	// Only the owner waits for the locks that opens use; the check is
+	// repeated under them.
+	if m, err := s.readMeta(dir, id); err != nil {
+		return err
+	} else if !TokenMatches(m.DeleteTokenHash, deleteToken) {
+		return ErrNotFound
+	}
 	gone, err := func() (bool, error) {
 		// The same locks as an open, so a reservation and a revocation never
 		// overwrite each other's metadata.

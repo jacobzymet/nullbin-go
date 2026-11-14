@@ -926,6 +926,8 @@ test('the password generator fills a strong password that opens the paste', asyn
   await h.page.click('#create-submit');
   await h.page.waitForSelector('#result', { state: 'visible', timeout: 60_000 });
   assert.equal(await h.page.inputValue('#password'), '', 'the password is cleared once the paste is created');
+  assert.equal(await h.page.getAttribute('#password', 'type'), 'password', 'and the field hides what is typed again');
+  assert.equal(await h.page.getAttribute('#password-reveal', 'aria-pressed'), 'false');
   const share = `${await h.page.textContent('#share-server')}${await h.page.textContent('#share-key')}`;
   for (const s of h.sent) assert.ok(!(s.body?.toString('latin1') ?? '').includes(generated), 'the password reached the server');
   await h.check();

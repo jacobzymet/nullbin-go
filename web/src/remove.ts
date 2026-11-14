@@ -25,7 +25,16 @@ export function initDelete(id: string, fragment: string): void {
   el('delete-title').focus();
   // A paste with separate links (its delete link says so) lists them. If
   // that fails, the list stays hidden: the delete prompt covers the rest.
-  if (parsed.recipients) fetchRecipients(id, token).then((list) => { if (!deleted) renderRecipients(id, token, list); }, () => {});
+  if (parsed.recipients) {
+    fetchRecipients(id, token).then((list) => { if (!deleted) renderRecipients(id, token, list); }, (e: unknown) => {
+      // A paste that is gone is covered by the delete prompt.
+      if (deleted || (e instanceof ApiError && e.status === 404)) return;
+      const error = el('recipients-error');
+      error.textContent = 'The list of links could not be loaded. Open the delete link again to try again.';
+      show(error);
+      reveal(el('recipients-manage'));
+    });
+  }
   button.addEventListener('click', async () => {
     if (button.disabled) return;
     const done = busy(button, 'Deleting…');
@@ -100,8 +109,13 @@ function renderRecipients(id: string, token: string, list: RecipientState[]): vo
         if (!deleted) renderRecipients(id, token, list);
       } catch (e) {
         // Revoking the last open link deletes the paste.
-        if (e instanceof ApiError && e.status === 404) showDeleted();
-        else done();
+        if (e instanceof ApiError && e.status === 404) {
+          showDeleted();
+          return;
+        }
+        // It is revoked even if the list could not be fetched again.
+        state.textContent = describe({ ...r, revoked: true });
+        revoke.remove();
       }
     });
     li.append(revoke);

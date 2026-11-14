@@ -10,6 +10,7 @@ import {
   bindCopy,
   bindReveal,
   busy,
+  concealPassword,
   chip,
   clearError,
   icon,
@@ -308,7 +309,7 @@ export function initCreate(draft?: { text: string; file: File | null }): void {
       text.value = '';
       password.value = '';
       password.dispatchEvent(new Event('input'));
-      if (password.type === 'text') revealButton.click(); // hidden again for whatever is typed next
+      concealPassword(revealButton, password); // hidden again for whatever is typed next
       files = [];
       renderFiles();
       updateCount();
@@ -399,10 +400,10 @@ async function createAndUpload(progress: Progress, o: CreateOptions): Promise<st
     }
     progress.set(1, 'Finishing…');
     await finalizePaste(created.id, created.uploadToken);
-    // The countdown runs on this browser's monotonic clock from the expiry
-    // just chosen, so a wrong computer clock does not skew it.
-    deadline = performance.now() + o.expiresIn * 1000;
-    expires = new Date(Date.now() + o.expiresIn * 1000);
+    // The countdown starts from the expiry just chosen, not from the
+    // server's time, so a wrong computer clock does not skew it.
+    deadline = Date.now() + o.expiresIn * 1000;
+    expires = new Date(deadline);
 
     // --- Result ---
     server = `${window.location.origin}/p/${created.id}`;
