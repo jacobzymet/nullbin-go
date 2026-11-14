@@ -1,0 +1,5 @@
+# Gitleaks findings checked by hand and known not to be secrets.
+# Format: <commit>:<file>:<rule>:<line>. Each entry matches only that exact finding.
+
+# The password generator's character set (A-Z, a-z and 2-9 without look-alikes), not a key.
+d7d37b3c791a7a282c3fac86ea90b3f76deebba8:web/src/create.ts:generic-api-key:37

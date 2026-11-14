@@ -35,7 +35,7 @@ import { initShareActions } from './share.ts';
 export const MIN_PASSWORD_LENGTH = 8;
 
 /** Characters of generated passwords: letters and digits, without ones that look alike (I l 1, O o 0). */
-const PASSWORD_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789';
+const GENERATOR_CHARACTERS = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789';
 export const GENERATED_PASSWORD_LENGTH = 20;
 
 /**
@@ -44,14 +44,14 @@ export const GENERATED_PASSWORD_LENGTH = 20;
  * character equally likely.
  */
 export function generatePassword(random: (bytes: Uint8Array<ArrayBuffer>) => unknown = (b) => crypto.getRandomValues(b)): string {
-  const n = PASSWORD_ALPHABET.length;
+  const n = GENERATOR_CHARACTERS.length;
   const limit = 256 - (256 % n); // the largest multiple of n that fits in a byte
   let out = '';
   const buf = new Uint8Array(32);
   while (out.length < GENERATED_PASSWORD_LENGTH) {
     random(buf);
     for (const b of buf) {
-      if (b < limit && out.length < GENERATED_PASSWORD_LENGTH) out += PASSWORD_ALPHABET[b % n];
+      if (b < limit && out.length < GENERATED_PASSWORD_LENGTH) out += GENERATOR_CHARACTERS[b % n];
     }
   }
   buf.fill(0);
